@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: App on EC2 - EC2 + Elastic IP + security group + GitHub OIDC CD roles (one stack per app)
+Description: App on EC2 - EC2 + Elastic IP + security group (one stack per app)
 
 Parameters:
   AppName:
@@ -24,25 +24,15 @@ Parameters:
   GitHubRepo:
     Type: String
     Default: ji-min0/hackathon-agent
-    Description: GitHub repo (owner/name) to clone on the server and to allow deploys from
+    Description: GitHub repo (owner/name) to clone on the server
   Branch:
     Type: String
     Default: main
-    Description: Branch allowed to deploy
-  CreateOIDCProvider:
-    Type: String
-    AllowedValues: ["true", "false"]
-    Default: "true"
-    Description: >-
-      Set false if the GitHub OIDC provider already exists in IAM (only one per account,
-      so the second app stack must use false)
+    Description: Branch to clone on the server
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
     Description: Latest Ubuntu 24.04 image (Canonical public SSM parameter)
-
-Conditions:
-  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, "true"]
 
 Resources:
   # Network
@@ -111,51 +101,6 @@ Resources:
       InstanceProfileName: !Sub ${AppName}-ec2
       Roles: [!Ref InstanceRole]
 
-  # GitHub Actions CD (OIDC)
-  # Lets AWS trust OIDC tokens issued by GitHub. Only one can exist per account.
-  GitHubOIDCProvider:
-    Type: AWS::IAM::OIDCProvider
-    Condition: ShouldCreateOIDCProvider
-    Properties:
-      Url: https://token.actions.githubusercontent.com
-      ClientIdList: [sts.amazonaws.com]
-
-  # Short-lived role for GitHub Actions
-  DeployRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub ${AppName}-github-deploy
-      MaxSessionDuration: 3600
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !If
-                - ShouldCreateOIDCProvider
-                - !Ref GitHubOIDCProvider
-                - !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${Branch}
-      Policies:
-        - PolicyName: deploy-via-ssm
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - { Effect: Allow, Action: ec2:DescribeInstances, Resource: "*" }
-              - Effect: Allow
-                Action: ssm:SendCommand
-                Resource: !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
-              - Effect: Allow
-                Action: ssm:SendCommand
-                Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}
-              - Effect: Allow
-                Action: [ssm:GetCommandInvocation, ssm:ListCommandInvocations]
-                Resource: "*"
-
 Outputs:
   PublicIp:
     Description: Server public IP. Put it in DOMAIN in the server .env
@@ -164,8 +109,5 @@ Outputs:
     Value: !Sub https://${ElasticIP}
   InstanceId:
     Value: !Ref Instance
-  DeployRoleArn:
-    Description: Value for the GitHub secret AWS_ROLE_ARN
-    Value: !GetAtt DeployRole.Arn
   SSHCommand:
     Value: !Sub ssh -i ~/.ssh/${KeyName}.pem ubuntu@${ElasticIP}

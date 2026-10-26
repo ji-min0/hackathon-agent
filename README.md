@@ -433,9 +433,13 @@ curl -s "$BASE/api/threads/<thread_id>/messages" -b "access_token=$TOKEN"
 
 ## 배포
 
-AWS 에는 CloudFormation 스택 하나(`deploy/aws/ec2-oidc-cfn.yml`)로 EC2·탄력적 IP·방화벽·CD 권한을
-만들고, main 에 push 하면 GitHub Actions 가 OIDC + SSM 으로 자동 배포한다(SSH·저장된 키 없음).
+AWS 에는 CloudFormation 스택 하나(`deploy/aws/ec2-cfn.yml`)로 EC2·탄력적 IP·방화벽을 만든다.
 서버 안에서는 Docker Compose 로 앱과 Caddy(HTTPS 자동 인증서)를 띄우고, DB 는 Supabase 를 쓴다.
+
+```bash
+# main 에 push 한 뒤 로컬에서 한 번에 배포 (git pull → 빌드·실행)
+ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@<IP> "cd hackathon-agent && ./scripts/deploy.sh"
+```
 
 스택 만들기, `.env` 올리기, 다른 레포 배포, NCP 로 옮기기는 [`docs/deploy.md`](docs/deploy.md) 참고.
 
