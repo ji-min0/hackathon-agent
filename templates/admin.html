@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}관리자{% endblock %}
+
+{% block nav %}
+<a class="nav-link" href="/">채팅으로</a>
+{% endblock %}
+
+{% block content %}
+<div class="admin">
+  <nav class="tabs" role="tablist">
+    <button type="button" class="tab" data-tab="dashboard" aria-selected="true">대시보드</button>
+    <button type="button" class="tab" data-tab="prompts" aria-selected="false">프롬프트 튜닝</button>
+  </nav>
+  <p class="error" id="error" hidden></p>
+
+  <section id="tab-dashboard">
+    <div class="toolbar">
+      <label>기간
+        <select id="days">
+          <option value="1">최근 1일</option>
+          <option value="7" selected>최근 7일</option>
+          <option value="30">최근 30일</option>
+        </select>
+      </label>
+      <button type="button" id="reload-agent" class="secondary">문서·프롬프트 다시 읽기</button>
+      <span class="muted" id="reload-result"></span>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <h2>경로별</h2>
+    <div class="table-wrap"><table id="routes"></table></div>
+
+    <h2>일별</h2>
+    <div class="table-wrap"><table id="daily"></table></div>
+
+    <h2>최근 로그 30건</h2>
+    <div class="table-wrap"><table id="recent"></table></div>
+  </section>
+
+  <section id="tab-prompts" hidden>
+    <div class="prompt-layout">
+      <ul id="prompt-list"></ul>
+      <div id="prompt-editor" hidden>
+        <h2 id="prompt-name"></h2>
+        <p class="muted" id="prompt-hint"></p>
+        <textarea id="prompt-content" rows="22" spellcheck="false"></textarea>
+        <input id="prompt-note" maxlength="200" placeholder="변경 메모 (예: 날씨 질문 오분류 수정)">
+        <div class="toolbar">
+          <button type="button" id="prompt-save">새 버전으로 저장·적용</button>
+          <button type="button" id="prompt-reset" class="secondary">코드 기본값으로 되돌리기</button>
+          <span class="muted" id="prompt-result"></span>
+        </div>
+        <h3>버전 기록</h3>
+        <div class="table-wrap"><table id="prompt-versions"></table></div>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block script %}
+<script src="/static/admin.js"></script>
+{% endblock %}

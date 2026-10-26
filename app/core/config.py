@@ -49,6 +49,9 @@ class Settings(BaseSettings):
 
     # input 가드레일. 위험 요청·개인정보·프롬프트 공격·목적 외 질문을 그래프 맨 앞에서 거절한다.
     guardrail_enabled: bool = True
+
+    # 관리자 페이지(/admin)에 들어갈 수 있는 이메일(쉼표 구분). 비우면 아무도 못 들어간다.
+    admin_emails: str = ""
     # 휴먼인더루프: 실행 전에 사람 승인을 받을 툴 이름(쉼표 구분). 비우면 끈다.
     # 되돌리기 어려운 실행 툴(메일 발송, 예약·제출, DB 수정)에만 건다. 조회 툴에는 걸지 않는다.
     hitl_tools: str = ""
@@ -65,6 +68,10 @@ class Settings(BaseSettings):
     ai_timeout_seconds: int = 60
     summary_trigger_tokens: int = 8000
     summary_keep_tokens: int = 4000
+
+    @property
+    def admin_email_list(self) -> list[str]:
+        return [email.strip().lower() for email in self.admin_emails.split(",") if email.strip()]
 
     @property
     def hitl_tool_names(self) -> list[str]:

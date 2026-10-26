@@ -236,6 +236,7 @@ async def send_message(
             question=question,
             answer=reply.answer,
             latency_ms=latency_ms,
+            route=reply.route,
         )
         log_event("db_save_success", chat_id=chat_id)
     except Exception as exc:

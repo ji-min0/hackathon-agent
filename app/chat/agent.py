@@ -54,18 +54,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from pydantic import BaseModel, Field
 
-from app.chat.prompts import (
-    GUARDRAIL_PROMPT,
-    NO_RAG_DOCUMENTS,
-    RAG_PROMPT,
-    ROUTER_PROMPT,
-    SEARCH_PROMPT,
-    SERVICE_SCOPE,
-    SINGLE_PROMPT,
-    SUMMARY_PROMPT,
-    SUPERVISOR_PROMPT,
-    SYSTEM_PROMPT,
-)
+from app.chat.prompts import NO_RAG_DOCUMENTS, get_prompt
 from app.core.config import settings
 from app.core.logging import log_event
 from app.rag import store
@@ -200,7 +189,7 @@ def router_input(messages: list[AnyMessage], rag_documents: str = NO_RAG_DOCUMEN
     lines = [f"{'user' if isinstance(m, HumanMessage) else 'assistant'}: {m.text}" for m in history]
     transcript = "\n".join(lines) or "(no earlier turns)"
     return [
-        SystemMessage(ROUTER_PROMPT.format(rag_documents=rag_documents)),
+        SystemMessage(get_prompt("ROUTER_PROMPT").format(rag_documents=rag_documents)),
         HumanMessage(
             f"<conversation>\n{transcript}\n</conversation>\n\n"
             f"<latest_message>\n{latest.text}\n</latest_message>"
@@ -259,7 +248,7 @@ def build_summarization(summary_model) -> SummarizationMiddleware:
         # "최근 N개 메시지 = N/2 턴" 이 성립하지 않기 때문이다.
         trigger=("tokens", settings.summary_trigger_tokens),
         keep=("tokens", settings.summary_keep_tokens),
-        summary_prompt=SUMMARY_PROMPT,
+        summary_prompt=get_prompt("SUMMARY_PROMPT"),
     )
 
 
@@ -272,7 +261,7 @@ def build_general_agent(main_model, summary_model):
     return create_agent(
         model=main_model,
         tools=[],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=get_prompt("SYSTEM_PROMPT"),
         middleware=[build_summarization(summary_model)],
     )
 
@@ -341,7 +330,7 @@ def build_search_agent(main_model, summary_model):
         model=main_model,
         tools=[build_search_tool()],
         middleware=[
-            dated_prompt(SEARCH_PROMPT),
+            dated_prompt(get_prompt("SEARCH_PROMPT")),
             *approval_middleware(),
             # 검색 반복으로 60초 제한을 넘기지 않게 한 번 답할 때 최대 2번만 검색한다.
             # 넘으면 툴 대신 에러 메시지를 돌려주고, 모델은 가진 결과로 답한다.
@@ -387,7 +376,7 @@ def build_rag_agent(rag_model, summary_model, document_tool: BaseTool, rag_docum
         model=rag_model,
         tools=tools,
         middleware=[
-            dated_prompt(RAG_PROMPT, rag_documents=rag_documents),
+            dated_prompt(get_prompt("RAG_PROMPT"), rag_documents=rag_documents),
             *approval_middleware(),
             ToolCallLimitMiddleware(run_limit=RAG_CALL_LIMIT),
             build_summarization(summary_model),
@@ -511,7 +500,11 @@ def build_guardrail_node(checker):
         try:
             decision = await checker.ainvoke(
                 [
-                    SystemMessage(GUARDRAIL_PROMPT.format(service_scope=SERVICE_SCOPE)),
+                    SystemMessage(
+                        get_prompt("GUARDRAIL_PROMPT").format(
+                            service_scope=get_prompt("SERVICE_SCOPE")
+                        )
+                    ),
                     HumanMessage(f"<latest_message>\n{text}\n</latest_message>"),
                 ]
             )
@@ -582,7 +575,7 @@ def build_single_graph(parts: GraphParts) -> tuple[StateGraph, str]:
         model=parts.main_model,
         tools=tools,
         middleware=[
-            dated_prompt(SINGLE_PROMPT, rag_documents=parts.rag_documents),
+            dated_prompt(get_prompt("SINGLE_PROMPT"), rag_documents=parts.rag_documents),
             *approval_middleware(),
             # 문서 검색과 웹 검색을 합쳐 RAG 에이전트와 같은 횟수까지 허용한다.
             ToolCallLimitMiddleware(run_limit=RAG_CALL_LIMIT),
@@ -625,7 +618,7 @@ def build_supervisor_graph(parts: GraphParts) -> tuple[StateGraph, str]:
         model=parts.main_model,
         tools=tools,
         middleware=[
-            dated_prompt(SUPERVISOR_PROMPT, rag_documents=parts.rag_documents),
+            dated_prompt(get_prompt("SUPERVISOR_PROMPT"), rag_documents=parts.rag_documents),
             *approval_middleware(),
             ToolCallLimitMiddleware(run_limit=SUPERVISOR_CALL_LIMIT),
             build_summarization(parts.summary_model),

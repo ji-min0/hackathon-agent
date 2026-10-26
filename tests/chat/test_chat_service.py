@@ -58,6 +58,7 @@ async def test_send_message_returns_answer_and_route(saved) -> None:
     assert payload == {"messages": [{"role": "user", "content": "오늘 날씨"}]}
     assert config == {"configurable": {"thread_id": str(thread_id)}}
     assert saved[0]["answer"] == "맑아요."
+    assert saved[0]["route"] == "search"
 
 
 @pytest.mark.asyncio

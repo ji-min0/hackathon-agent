@@ -33,6 +33,12 @@ class Unauthorized(AppError):
     message = "로그인이 필요합니다."
 
 
+class Forbidden(AppError):
+    status_code = 403
+    error_code = "FORBIDDEN"
+    message = "권한이 없습니다."
+
+
 class NotFound(AppError):
     status_code = 404
     error_code = "NOT_FOUND"

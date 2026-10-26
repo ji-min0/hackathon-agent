@@ -168,12 +168,109 @@ button.thread-delete {
 
 #chat-form input { flex: 1; margin-top: 0; }
 
+/* --- 관리자 화면 --- */
+
+.nav-link { color: var(--muted); font-size: 14px; text-decoration: none; }
+
+.admin h2 { margin: 28px 0 10px; font-size: 16px; }
+.admin h3 { margin: 24px 0 8px; font-size: 14px; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+
+.tab {
+  padding: 10px 14px;
+  color: var(--muted);
+  background: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
+.toolbar label { display: flex; align-items: center; gap: 8px; margin: 0; }
+
+select, textarea {
+  padding: 8px 10px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+button.secondary { color: var(--text); background: var(--panel); border: 1px solid var(--border); }
+button.small { padding: 4px 10px; font-size: 13px; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+
+.stat {
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.stat-label { color: var(--muted); font-size: 13px; }
+.stat-value { margin-top: 4px; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+
+.admin table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+.admin th, .admin td {
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.admin tr:last-child td { border-bottom: 0; }
+.admin td { font-variant-numeric: tabular-nums; word-break: break-word; }
+
+.bar { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+.bar span { height: 8px; background: var(--accent); border-radius: 4px; }
+.bar em { color: var(--muted); font-style: normal; }
+
+.prompt-layout { display: grid; grid-template-columns: 220px 1fr; gap: 20px; }
+
+#prompt-list { margin: 0; padding: 0; list-style: none; }
+
+.prompt-item {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.prompt-item small { color: var(--muted); font-size: 12px; }
+.prompt-item[aria-current="true"] { border-color: var(--accent); }
+
+#prompt-editor h2 { margin-top: 0; }
+#prompt-note { margin: 10px 0 0; }
+
 @media (max-width: 700px) {
   main {
     padding: 16px 12px;
   }
 
-  .layout {
+  .layout,
+  .prompt-layout {
     grid-template-columns: 1fr;
     gap: 12px;
   }

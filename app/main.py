@@ -18,7 +18,10 @@ os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: E402
 from supabase import AsyncClientOptions, create_async_client  # noqa: E402
 
+from app.admin import repository as admin_repository  # noqa: E402
+from app.admin import router as admin_router  # noqa: E402
 from app.auth import router as auth_router  # noqa: E402
+from app.chat import prompts  # noqa: E402
 from app.chat import router as chat_router  # noqa: E402
 from app.chat.agent import build_agent  # noqa: E402
 from app.core.config import settings  # noqa: E402
@@ -40,6 +43,31 @@ async def load_rag_sources(pool) -> list[str]:
         return []
 
 
+async def load_prompt_overrides(pool) -> None:
+    """관리자 페이지에서 적용한 프롬프트를 읽는다. 테이블이 없으면 코드 기본값을 쓴다."""
+    try:
+        prompts.set_overrides(await admin_repository.active_prompts(pool))
+    except Exception as exc:
+        log_event("prompt_overrides_unavailable", level=logging.WARNING, error=type(exc).__name__)
+
+
+def make_agent_loader(app: FastAPI, pool, checkpointer):
+    """프롬프트·RAG 문서 목록을 다시 읽어 그래프를 새로 만드는 함수.
+
+    관리자 페이지에서 프롬프트를 적용하거나 문서를 다시 넣었을 때 서버 재시작 없이 반영한다.
+    진행 중인 요청은 이전 그래프로 끝나고, 다음 요청부터 새 그래프를 쓴다.
+    """
+
+    async def reload_agent() -> list[str]:
+        await load_prompt_overrides(pool)
+        rag_sources = await load_rag_sources(pool)
+        app.state.agent = build_agent(checkpointer, pool=pool, rag_sources=rag_sources)
+        log_event("agent_reloaded", rag_documents=len(rag_sources))
+        return rag_sources
+
+    return reload_agent
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
@@ -55,8 +83,8 @@ async def lifespan(app: FastAPI):
 
     app.state.pool = pool
     app.state.checkpointer = checkpointer
-    rag_sources = await load_rag_sources(pool)
-    app.state.agent = build_agent(checkpointer, pool=pool, rag_sources=rag_sources)
+    app.state.reload_agent = make_agent_loader(app, pool, checkpointer)
+    rag_sources = await app.state.reload_agent()
     # 동기 클라이언트는 네트워크 호출이 이벤트 루프를 막으므로 async 로 만든다.
     #
     # 클라이언트 하나를 모든 요청이 공유한다. 세션을 클라이언트에 저장하면
@@ -106,6 +134,7 @@ app.include_router(auth_router.router)
 app.include_router(threads_router.router)
 app.include_router(chat_router.router)
 app.include_router(chat_router.chat_router)
+app.include_router(admin_router.router)
 
 
 @app.get("/health", tags=["ops"])

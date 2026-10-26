@@ -20,15 +20,16 @@ async def save_success(
     question: str,
     answer: str,
     latency_ms: int,
+    route: str | None = None,
 ) -> int:
-    """성공한 문답을 기록하고 id 를 돌려준다."""
+    """성공한 문답을 기록하고 id 를 돌려준다. route 는 대시보드 집계용이다."""
     async with pool.connection() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute(
                 "INSERT INTO chat_logs "
-                "(thread_id, user_id, question, answer, status, latency_ms) "
-                "VALUES (%s, %s, %s, %s, 'success', %s) RETURNING id",
-                (thread_id, user_id, question, answer, latency_ms),
+                "(thread_id, user_id, question, answer, status, latency_ms, route) "
+                "VALUES (%s, %s, %s, %s, 'success', %s, %s) RETURNING id",
+                (thread_id, user_id, question, answer, latency_ms, route),
             )
             row = await cursor.fetchone()
             return row[0]

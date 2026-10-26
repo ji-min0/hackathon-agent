@@ -123,6 +123,35 @@ ALTER TABLE public.rag_chunks ENABLE ROW LEVEL SECURITY;
 
 
 -- ----------------------------------------------------------------------------
+-- 6. 관리자 페이지 : chat_logs.route, prompts
+--    route 는 대시보드의 경로별 집계에 쓴다(general | search | rag | blocked ...).
+--    prompts 는 관리자 화면에서 고친 프롬프트 버전이다. 이름마다 활성 버전은 최대 하나이고,
+--    활성 버전이 없으면 코드 기본값(app/chat/prompts.py)을 쓴다.
+-- ----------------------------------------------------------------------------
+ALTER TABLE public.chat_logs ADD COLUMN IF NOT EXISTS route TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_chat_logs_created
+    ON public.chat_logs (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.prompts (
+    id         BIGSERIAL   PRIMARY KEY,
+    name       TEXT        NOT NULL,
+    version    INTEGER     NOT NULL,
+    content    TEXT        NOT NULL,
+    is_active  BOOLEAN     NOT NULL DEFAULT false,
+    note       TEXT,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (name, version)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_one_active
+    ON public.prompts (name) WHERE is_active;
+
+ALTER TABLE public.prompts ENABLE ROW LEVEL SECURITY;
+
+
+-- ----------------------------------------------------------------------------
 -- 참고: LangGraph 체크포인트 테이블
 --
 --    checkpoints, checkpoint_writes, checkpoint_blobs, checkpoint_migrations 는
@@ -142,5 +171,5 @@ SELECT table_name,
            AND c.table_name   = t.table_name) AS column_count
   FROM information_schema.tables t
  WHERE t.table_schema = 'public'
-   AND t.table_name IN ('chat_threads', 'chat_logs', 'rag_chunks')
+   AND t.table_name IN ('chat_threads', 'chat_logs', 'rag_chunks', 'prompts')
  ORDER BY table_name;
