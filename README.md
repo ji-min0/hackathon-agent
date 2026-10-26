@@ -1,9 +1,6 @@
 # AI 챗봇 서비스
 
-**배포 주소 — https://chatbot-api-xihh.onrender.com**
-
-> 무료 플랜이라 15분 이상 요청이 없으면 대기 상태로 들어간다.
-> 첫 접속은 깨어나는 데 1분쯤 걸릴 수 있다.
+**배포 주소 — (AWS 배포 후 기입)** · 배포 방법은 [`docs/deploy.md`](docs/deploy.md)
 
 로그인한 사용자가 웹에서 질문하면 AI 가 답하고, 모든 대화가 DB 에 누적되는 서비스다.
 대화별로 문맥이 이어지며, 지난 대화를 언제든 다시 열어볼 수 있다.
@@ -28,7 +25,7 @@
 | AI | LangGraph `create_agent` + `SummarizationMiddleware` |
 | 인증 | Supabase Auth + HttpOnly 쿠키 |
 | DB | Supabase PostgreSQL |
-| 배포 | Render |
+| 배포 | AWS EC2 / NCP + Docker Compose + Caddy(HTTPS) |
 
 ---
 
@@ -394,7 +391,7 @@ psql "$DATABASE_URL" -f scripts/check_logs.sql
 **Application → Cookies** 에서 `access_token` 값을 복사해 사용한다.
 
 ```bash
-BASE=https://chatbot-api-xihh.onrender.com
+BASE=http://localhost:8000   # 배포 서버라면 https://<DOMAIN>
 TOKEN=<복사한 access_token>
 
 # 1) 내 채팅방 목록
@@ -436,54 +433,24 @@ curl -s "$BASE/api/threads/<thread_id>/messages" -b "access_token=$TOKEN"
 
 ## 배포
 
-배포 URL: **https://chatbot-api-xihh.onrender.com**
+AWS EC2 또는 NCP 서버 한 대에 Docker Compose 로 띄운다. 앞단의 Caddy 가 HTTPS 인증서를
+자동으로 발급하고, DB 는 Supabase 를 그대로 쓴다. 클라우드를 바꿔도 서버 안의 절차는 같다.
 
-Render 에 GitHub 저장소를 연결한다. 빌드·시작 명령과 환경 변수 목록은
-[`render.yaml`](render.yaml) 에 정의되어 있어, Blueprint 로 가져오면 그대로 재현된다.
-대시보드에서 직접 설정한다면 아래와 같다.
-
+```bash
+# 서버에서 (처음 한 번)
+git clone https://github.com/ji-min0/hackathon-agent.git && cd hackathon-agent
+bash scripts/server-setup.sh          # Docker 설치, 메모리가 작으면 스왑 생성
+# 로컬에서 .env 를 서버로 복사한 뒤
+make deploy DOMAIN=3-35-10-7.sslip.io  # 도메인이 없으면 "IP(점을 -로).sslip.io"
 ```
-Build Command      pip install -r requirements.txt
-Start Command      uvicorn app.main:app --host 0.0.0.0 --port $PORT
-Health Check Path  /health
-```
 
-Python 버전은 [`.python-version`](.python-version) 으로 고정한다.
-
-### 환경 변수
-
-`.env` 의 키를 Render 환경 변수로 등록한다. **로컬과 달라지는 값은 하나뿐이다.**
-
-| 키 | 배포 값 |
-|---|---|
-| `COOKIE_SECURE` | **`true`** — Render 는 HTTPS 를 제공하므로 세션 쿠키에 Secure 를 켠다 |
-
-비밀값(`OPENAI_API_KEY`, `GEMINI_API_KEY`, `DATABASE_URL`, `SUPABASE_URL`,
-`SUPABASE_ANON_KEY`)은 `render.yaml` 에 값을 두지 않고 대시보드에서 입력한다.
-
-### 배포 후 확인
-
-1. `GET /health` 가 `{"status":"ok"}` 를 반환하는지
-2. 기동 로그에 `startup_complete main_model=... summary_model=...` 이 찍히는지
-3. Supabase → Authentication → Sign In / Providers → Email 에서 Confirm email 이 꺼져 있는지
-4. 회원가입 → 로그인 → 대화 전송이 배포 환경에서 동작하는지
+서버 만들기(AWS·NCP 콘솔), 업데이트, AWS → NCP 이전, 문제 해결은 [`docs/deploy.md`](docs/deploy.md) 참고.
 
 ### 유휴 정지 주의
 
-무료 플랜에는 유휴 정지가 있다.
-
-| 대상 | 정지 조건 | 결과 |
-|---|---|---|
-| Render | 15분 무활동 | spin down. 다음 요청 시 약 1분 뒤 자동으로 깨어난다 |
-| Supabase | **7일 무활동** | **프로젝트 일시정지. 앱 전체가 동작하지 않는다** |
-
-Render 는 요청이 오면 스스로 깨어나지만, **Supabase 는 그렇지 않다.**
-따라서 오래 사용하지 않았다면 **시연이나 평가 전에 서비스에 한 번 접속해 깨워 둔다.**
-`/health` 를 호출하면 DB 에 `SELECT 1` 이 나가 Render 와 Supabase 가 함께 깨어난다.
-
-```bash
-curl -s https://chatbot-api-xihh.onrender.com/health
-```
+Supabase 무료 플랜은 **7일 무활동이면 프로젝트가 일시정지되어 앱 전체가 동작하지 않는다.**
+오래 사용하지 않았다면 **시연이나 평가 전에 `/health` 를 한 번 호출해 깨워 둔다.**
+`/health` 는 DB 에 `SELECT 1` 을 보낸다.
 
 ---
 

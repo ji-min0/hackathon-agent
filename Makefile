@@ -2,7 +2,7 @@
 # 모든 명령은 uv 가상환경(.venv)에서 실행된다.
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev test cov lint format check fix docker-build docker-run clean
+.PHONY: help install dev test cov lint format check fix docker-build docker-run deploy deploy-logs clean
 
 IMAGE ?= chatbot-api
 
@@ -41,6 +41,12 @@ docker-build: ## Docker 이미지 빌드
 
 docker-run: ## Docker 컨테이너 실행 (.env 사용, localhost:8000)
 	docker run --rm --env-file .env -p 8000:8000 $(IMAGE)
+
+deploy: ## (서버에서) 빌드 후 실행. DOMAIN 필요. 예) make deploy DOMAIN=3-35-10-7.sslip.io
+	DOMAIN=$(DOMAIN) docker compose up -d --build
+
+deploy-logs: ## (서버에서) 앱 로그 보기
+	docker compose logs -f app
 
 clean: ## 캐시 정리
 	find . -name "__pycache__" -type d -prune -not -path "./.venv/*" -exec rm -rf {} +
