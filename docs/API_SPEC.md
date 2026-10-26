@@ -617,9 +617,12 @@ POST /api/threads/{thread_id}/messages
 ```json
 {
   "thread_id": "5aa60fa8-c927-4416-b559-f9661b7df00f",
-  "answer": "SQLite를 사용한다고 하셨습니다."
+  "answer": "SQLite를 사용한다고 하셨습니다.",
+  "route": "general"
 }
 ```
+
+`route` 는 의도 분류기가 고른 경로다(`rag` | `search` | `general`). 디버깅·대시보드용이다.
 
 **오류 발생 시** — LLM 호출 실패나 타임아웃도 `chat_logs` 에 기록한다.
 

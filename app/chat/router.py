@@ -35,11 +35,11 @@ async def send_message(
     pool=Depends(get_pool),
     agent=Depends(get_agent),
 ) -> MessageResponse:
-    answer = await service.send_message(
+    reply = await service.send_message(
         pool=pool,
         agent=agent,
         thread_id=thread_id,
         user_id=user.id,
         question=body.message,
     )
-    return MessageResponse(thread_id=thread_id, answer=answer)
+    return MessageResponse(thread_id=thread_id, answer=reply.answer, route=reply.route)

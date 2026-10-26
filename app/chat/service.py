@@ -15,6 +15,7 @@ TODO(챗 담당): 전체 구현
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from uuid import UUID
 
 from app.chat import repository
@@ -23,6 +24,13 @@ from app.core.config import settings
 from app.core.errors import AITimeout, AIUpstreamError, Conflict
 from app.core.logging import log_event
 from app.threads import service as threads_service
+
+
+@dataclass(frozen=True)
+class ChatReply:
+    answer: str
+    # 분류기가 고른 경로(rag | search | general). 디버깅·대시보드용.
+    route: str
 
 
 async def save_error_log(*, pool, thread_id, user_id, question: str, error: Exception) -> None:
@@ -47,7 +55,7 @@ async def send_message(
     thread_id: UUID,
     user_id: UUID,
     question: str,
-) -> str:
+) -> ChatReply:
     await threads_service.require_owned(pool, thread_id, user_id)
 
     log_event("ai_call_start", thread_id=thread_id)
@@ -95,9 +103,10 @@ async def send_message(
     answer = result["messages"][-1].content
     if not isinstance(answer, str):
         answer = str(answer)
+    route = result.get("route", "general")
 
     latency_ms = int((time.perf_counter() - started) * 1000)
-    log_event("ai_call_success", latency_ms=latency_ms)
+    log_event("ai_call_success", latency_ms=latency_ms, route=route)
 
     # DB 저장에 실패해도 이미 받은 답변은 사용자에게 돌려준다.
     try:
@@ -113,7 +122,7 @@ async def send_message(
     except Exception as exc:
         log_event("db_save_failed", level=logging.ERROR, error=type(exc).__name__)
 
-    return answer
+    return ChatReply(answer=answer, route=route)
 
 
 async def list_messages(*, pool, thread_id: UUID, user_id: UUID) -> list[dict]:

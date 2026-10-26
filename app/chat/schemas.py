@@ -1,6 +1,7 @@
 """메시지 요청/응답 스키마."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, field_validator
@@ -26,6 +27,8 @@ class MessageRequest(BaseModel):
 class MessageResponse(BaseModel):
     thread_id: UUID
     answer: str
+    # 분류기가 고른 경로. 디버깅·대시보드용이며 웹 화면은 쓰지 않는다.
+    route: Literal["rag", "search", "general"]
 
 
 class ChatLogResponse(BaseModel):
