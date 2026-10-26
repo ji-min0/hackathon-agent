@@ -1,7 +1,8 @@
 """환경 변수 로딩. 값은 .env 에서 읽고, 키 목록은 .env.example 을 기준으로 한다."""
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -15,10 +16,18 @@ class Settings(BaseSettings):
     # LLM
     openai_api_key: str
     gemini_api_key: str = ""
-    openai_model_name: str = "gpt-4.1-mini"
+    openai_model_name: str = "gpt-5-mini"
+    # OpenAI 호환 게이트웨이(Codyssey)나 vLLM 주소. 비우면 OpenAI 공식 서버로 간다.
+    openai_base_url: str | None = None
+
+    anthropic_api_key: str = ""
+    anthropic_model_name: str = "claude-haiku-4"
+    # Anthropic SDK 가 /v1/messages 를 직접 붙이므로 /v1 없이 적는다.
+    anthropic_base_url: str | None = None
+    anthropic_timeout_seconds: int = 40
     gemini_model_name: str = "gemini-2.5-flash"
-    main_model_provider: Literal["openai", "gemini"] = "openai"
-    summary_model_provider: Literal["openai", "gemini"] = "openai"
+    main_model_provider: Literal["openai", "anthropic", "gemini"] = "openai"
+    summary_model_provider: Literal["openai", "anthropic", "gemini"] = "openai"
     openai_timeout_seconds: int = 18
     gemini_timeout_seconds: int = 20
     ai_timeout_seconds: int = 60
@@ -27,9 +36,12 @@ class Settings(BaseSettings):
 
     def model_label(self, provider: str) -> str:
         """로그에 남길 `공급자:모델명` 문자열."""
-        name = (
-            self.openai_model_name if provider == "openai" else self.gemini_model_name
-        )
+        names = {
+            "openai": self.openai_model_name,
+            "anthropic": self.anthropic_model_name,
+            "gemini": self.gemini_model_name,
+        }
+        name = names.get(provider, "unknown")
         return f"{provider}:{name}"
 
     # Supabase
