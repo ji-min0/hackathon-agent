@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+Provider = Literal["openai", "anthropic", "gemini"]
+
 
 class Settings(BaseSettings):
     # model_ 로 시작하는 필드가 pydantic 예약어와 충돌하지 않도록 보호를 해제한다.
@@ -30,8 +32,11 @@ class Settings(BaseSettings):
     # 웹 검색(Tavily). 비우면 search 로 분류된 질문도 general 이 답한다.
     tavily_api_key: str = ""
     tavily_max_results: int = 5
-    main_model_provider: Literal["openai", "anthropic", "gemini"] = "openai"
-    summary_model_provider: Literal["openai", "anthropic", "gemini"] = "openai"
+    main_model_provider: Provider = "openai"
+    summary_model_provider: Provider = "openai"
+    # 노드별 공급자. 비우면 main 과 같은 공급자를 쓴다.
+    router_model_provider: Provider | None = None
+    search_model_provider: Provider | None = None
     openai_timeout_seconds: int = 18
     gemini_timeout_seconds: int = 20
     ai_timeout_seconds: int = 60

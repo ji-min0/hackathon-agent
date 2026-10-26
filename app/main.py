@@ -64,6 +64,14 @@ async def lifespan(app: FastAPI):
         "startup_complete",
         main_model=settings.model_label(settings.main_model_provider),
         summary_model=settings.model_label(settings.summary_model_provider),
+        router_model=settings.model_label(
+            settings.router_model_provider or settings.main_model_provider
+        ),
+        search_model=settings.model_label(
+            settings.search_model_provider or settings.main_model_provider
+        )
+        if settings.tavily_api_key
+        else "disabled",
     )
     try:
         yield

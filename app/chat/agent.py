@@ -304,8 +304,8 @@ def build_agent(checkpointer):
     # 실패 시에는 Anthropic → Gemini 순서로 자동 전환한다.
     main_model = build_model(settings.main_model_provider)
     summary_model = build_model(settings.summary_model_provider)
-    # TODO(2단계): ROUTER_MODEL 등 노드별 모델을 env 로 따로 지정한다.
-    router = build_router(settings.main_model_provider)
+    # 노드별 공급자를 비우면 main 과 같은 공급자를 쓴다.
+    router = build_router(settings.router_model_provider or settings.main_model_provider)
 
     graph = StateGraph(ChatState)
     graph.add_node("classify", build_classify(router))
@@ -314,7 +314,8 @@ def build_agent(checkpointer):
     # 검색 키가 없으면 search 노드를 만들지 않고 general 로 보낸다.
     destinations = {"general": "general", "search": "general", "rag": "general"}
     if settings.tavily_api_key:
-        graph.add_node("search", build_agent_node(build_search_agent(main_model, summary_model)))
+        search_model = build_model(settings.search_model_provider or settings.main_model_provider)
+        graph.add_node("search", build_agent_node(build_search_agent(search_model, summary_model)))
         graph.add_edge("search", END)
         destinations["search"] = "search"
 

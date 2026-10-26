@@ -57,6 +57,8 @@ def build_test_graph(monkeypatch, main_model, summary_model, router=None, **over
         "summary_model_provider": "summary",
         "summary_trigger_tokens": 8000,
         "summary_keep_tokens": 4000,
+        "router_model_provider": None,
+        "search_model_provider": None,
         "tavily_api_key": "",
         "tavily_max_results": 5,
         **overrides,
@@ -269,3 +271,43 @@ def test_search_tool_gets_key_from_settings(monkeypatch) -> None:
 
     assert search_tool.max_results == 3
     assert search_tool.api_wrapper.tavily_api_key.get_secret_value() == "tvly-test"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_models", "expected_router"),
+    [
+        # 비우면 main 공급자를 따른다. build_model 은 main, summary, search 순서로 부른다.
+        ({}, ["main", "summary", "main"], ["main"]),
+        (
+            {"router_model_provider": "fast", "search_model_provider": "fast"},
+            ["main", "summary", "fast"],
+            ["fast"],
+        ),
+    ],
+)
+def test_node_providers_default_to_main(
+    monkeypatch, overrides, expected_models, expected_router
+) -> None:
+    models: list[str] = []
+    routers: list[str] = []
+    values = {
+        "main_model_provider": "main",
+        "summary_model_provider": "summary",
+        "router_model_provider": None,
+        "search_model_provider": None,
+        "summary_trigger_tokens": 8000,
+        "summary_keep_tokens": 4000,
+        "tavily_api_key": "test-tavily-key",
+        **overrides,
+    }
+    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool([]))
+    monkeypatch.setattr(
+        agent, "build_model", lambda p: models.append(p) or FakeToolModel(messages=iter([]))
+    )
+    monkeypatch.setattr(agent, "build_router", lambda p: routers.append(p) or fake_router())
+
+    agent.build_agent(InMemorySaver())
+
+    assert models == expected_models
+    assert routers == expected_router
