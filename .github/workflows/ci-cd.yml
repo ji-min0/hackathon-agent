@@ -1,0 +1,77 @@
+# CI: 모든 push·PR 에서 린트·포맷·테스트(make check)를 돌린다. 배포는 하지 않는다.
+# CD: main 에 push 되고 CI 가 통과했을 때만 서버에 SSH 로 접속해 배포한다.
+#
+# 필요한 GitHub Secrets (Settings → Secrets and variables → Actions)
+#   DEPLOY_HOST         서버 공인 IP (예: 52.78.121.248)
+#   DEPLOY_USER         SSH 계정 (AWS Ubuntu: ubuntu, NCP: root)
+#   DEPLOY_SSH_KEY      배포 전용 SSH 비밀 키(ed25519) 전체 내용
+#   DEPLOY_KNOWN_HOSTS  서버 호스트 키(ssh-keyscan 결과). 중간자 공격을 막기 위해 미리 등록한다
+# 서버를 옮기면 이 값들만 바꾸면 된다(docs/deploy.md).
+
+name: CI/CD
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: CI (lint · format · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: 의존성 설치
+        run: uv sync --frozen
+
+      # 테스트는 실제 DB·LLM 을 부르지 않는다. 더미 환경 변수는 tests/conftest.py 가 채운다.
+      - name: make check
+        run: make check
+
+  cd:
+    name: CD (deploy to server)
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # 배포가 겹치지 않게 한 번에 하나씩만 돈다. 진행 중인 배포는 끊지 않고 끝날 때까지 기다린다.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    environment: production
+    steps:
+      - name: SSH 설정
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: 서버에 배포
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'SCRIPT'
+          set -euo pipefail
+          cd ~/hackathon-agent
+          # 서버에서 추적 파일을 고쳐도 GitHub 의 main 으로 맞춘다. .env 는 추적하지 않아 그대로 남는다.
+          git fetch -q origin main
+          git reset -q --hard origin/main
+          git log --oneline -1
+          docker compose up -d --build
+          docker image prune -f > /dev/null
+          SCRIPT
+
+      - name: 헬스체크
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 10 "https://${{ secrets.DEPLOY_HOST }}/health"; then
+              echo; echo "배포 완료"; exit 0
+            fi
+            sleep 5
+          done
+          echo "헬스체크 실패: 서버에서 docker compose logs app 을 확인하세요"
+          exit 1

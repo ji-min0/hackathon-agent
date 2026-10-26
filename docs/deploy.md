@@ -79,6 +79,48 @@ docker compose restart app                 # .env 를 고쳤을 때
   "문서·프롬프트 다시 읽기"를 누르면 서버 재시작 없이 반영된다.
 - 워커는 1개다. 같은 대화방 동시 실행 가드가 프로세스 안에서만 동작하기 때문이다.
 
+## CI/CD (GitHub Actions)
+
+`.github/workflows/ci-cd.yml`
+
+- **CI**: 모든 push·PR 에서 `make check`(ruff 린트·포맷, pytest)를 돌린다. 배포는 하지 않는다.
+- **CD**: main 에 push 되고 CI 가 통과하면 서버에 SSH 로 접속해 `git reset --hard origin/main` →
+  `docker compose up -d --build` → `https://<DEPLOY_HOST>/health` 확인. 서버 `.env` 는 그대로 둔다.
+
+### 처음 한 번 설정
+
+배포 전용 SSH 키를 따로 만든다(사람이 쓰는 키와 분리해서, 문제가 생기면 이 키만 지운다).
+
+```bash
+# 1) 로컬에서 배포 키 만들기
+ssh-keygen -t ed25519 -N "" -C github-actions-deploy -f ~/.ssh/hackathon-deploy
+
+# 2) 서버에 공개 키 등록
+ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@52.78.121.248 \
+  "cat >> ~/.ssh/authorized_keys" < ~/.ssh/hackathon-deploy.pub
+
+# 3) GitHub Secrets 등록 (gh CLI)
+gh secret set DEPLOY_HOST --body 52.78.121.248
+gh secret set DEPLOY_USER --body ubuntu
+gh secret set DEPLOY_SSH_KEY < ~/.ssh/hackathon-deploy
+ssh-keyscan -t ed25519 52.78.121.248 2>/dev/null | gh secret set DEPLOY_KNOWN_HOSTS
+```
+
+4) 방화벽: GitHub Actions 러너는 IP 가 매번 바뀌므로 22번을 전체 허용한다. 비밀번호 로그인은
+꺼져 있고(Ubuntu 기본값) 등록한 키로만 들어올 수 있다.
+
+```bash
+aws ec2 authorize-security-group-ingress --region ap-northeast-2 --group-name hackathon-agent-sg \
+  --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=0.0.0.0/0,Description=github-actions}]"
+```
+
+### NCP 로 옮기면
+
+1. 새 서버의 ACG 에서 22번을 전체 허용한다.
+2. 새 서버 계정(root)의 `~/.ssh/authorized_keys` 에 `~/.ssh/hackathon-deploy.pub` 을 추가한다.
+3. `DEPLOY_HOST`(새 IP), `DEPLOY_USER`(root), `DEPLOY_KNOWN_HOSTS`(새 서버 ssh-keyscan) 를 다시 등록한다.
+   `DEPLOY_SSH_KEY` 는 그대로 쓴다. 워크플로 파일은 고치지 않는다.
+
 ## AWS → NCP 로 옮기기
 
 1. NCP 에서 **1. 서버 만들기**를 한다.

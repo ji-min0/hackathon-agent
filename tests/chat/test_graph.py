@@ -278,7 +278,11 @@ def test_search_tool_gets_key_from_settings(monkeypatch) -> None:
     assert search_tool.api_wrapper.tavily_api_key.get_secret_value() == "tvly-test"
 
 
-def test_search_tool_exposes_only_query() -> None:
+def test_search_tool_exposes_only_query(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent, "settings", SimpleNamespace(tavily_api_key="tvly-test", tavily_max_results=5)
+    )
+
     # 선택 인자(time_range 등)를 모델이 임의로 채우면 결과가 0건이 되곤 했다.
     schema = convert_to_openai_tool(agent.build_search_tool())["function"]["parameters"]
 
