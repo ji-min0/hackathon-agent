@@ -1,12 +1,10 @@
 # CI: 모든 push·PR 에서 린트·포맷·테스트(make check)를 돌린다. 배포는 하지 않는다.
-# CD: main 에 push 되고 CI 가 통과했을 때만 서버에 SSH 로 접속해 배포한다.
+# CD: main 에 push 되고 CI 가 통과했을 때만 AWS EC2 에 배포한다.
 #
-# 필요한 GitHub Secrets (Settings → Secrets and variables → Actions)
-#   DEPLOY_HOST         서버 공인 IP (예: 52.78.121.248)
-#   DEPLOY_USER         SSH 계정 (AWS Ubuntu: ubuntu, NCP: root)
-#   DEPLOY_SSH_KEY      배포 전용 SSH 비밀 키(ed25519) 전체 내용
-#   DEPLOY_KNOWN_HOSTS  서버 호스트 키(ssh-keyscan 결과). 중간자 공격을 막기 위해 미리 등록한다
-# 서버를 옮기면 이 값들만 바꾸면 된다(docs/deploy.md).
+# CD 는 SSH 를 쓰지 않는다.
+#   1) GitHub OIDC 로 IAM 역할(github-actions-deploy)의 임시 권한을 받는다. 저장된 AWS 키가 없다.
+#   2) AWS SSM Run Command 로 EC2 안의 SSM 에이전트에게 배포 명령을 보낸다. 22번 포트가 필요 없다.
+# 필요한 설정: GitHub Secret AWS_ROLE_ARN, EC2 에 SSM 용 인스턴스 역할(docs/deploy.md).
 
 name: CI/CD
 
@@ -14,6 +12,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+
+env:
+  AWS_REGION: ap-northeast-2
+  # 배포 대상 EC2 의 Name 태그. IAM 정책도 이 태그가 붙은 인스턴스에만 명령을 허용한다.
+  INSTANCE_NAME: hackathon-agent
 
 jobs:
   ci:
@@ -34,7 +37,7 @@ jobs:
         run: make check
 
   cd:
-    name: CD (deploy to server)
+    name: CD (deploy to EC2 via SSM)
     needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -42,33 +45,68 @@ jobs:
     concurrency:
       group: deploy
       cancel-in-progress: false
-    environment: production
+    # OIDC 토큰을 받으려면 id-token 쓰기 권한이 필요하다.
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - name: SSH 설정
-        run: |
-          install -m 700 -d ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+      - name: AWS 임시 권한 받기 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: 서버에 배포
+      - name: 배포 대상 찾기
+        id: target
         run: |
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'SCRIPT'
-          set -euo pipefail
-          cd ~/hackathon-agent
+          read -r IID IP < <(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=$INSTANCE_NAME" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].[InstanceId,PublicIpAddress]" --output text)
+          if [ -z "$IID" ] || [ "$IID" = "None" ]; then
+            echo "실행 중인 $INSTANCE_NAME 인스턴스가 없습니다"; exit 1
+          fi
+          echo "instance=$IID" >> "$GITHUB_OUTPUT"
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "대상: $IID ($IP)"
+
+      - name: SSM 으로 배포 명령 보내기
+        id: deploy
+        run: |
+          # SSM 은 root 로 실행하므로 ubuntu 계정으로 바꿔서 배포한다.
           # 서버에서 추적 파일을 고쳐도 GitHub 의 main 으로 맞춘다. .env 는 추적하지 않아 그대로 남는다.
-          git fetch -q origin main
-          git reset -q --hard origin/main
-          git log --oneline -1
-          docker compose up -d --build
-          docker image prune -f > /dev/null
-          SCRIPT
+          SCRIPT='sudo -u ubuntu -H bash -c "set -euo pipefail; cd ~/hackathon-agent;
+            git fetch -q origin main; git reset -q --hard origin/main; git log --oneline -1;
+            docker compose up -d --build --wait; docker image prune -f > /dev/null"'
+          jq -n --arg c "$SCRIPT" '{commands: [$c]}' > params.json
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${{ steps.target.outputs.instance }}" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${GITHUB_SHA::7}" \
+            --parameters file://params.json \
+            --timeout-seconds 900 \
+            --query Command.CommandId --output text)
+          echo "command=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM 명령: $CMD_ID"
+
+      - name: 배포 결과 기다리기
+        run: |
+          IID=${{ steps.target.outputs.instance }}
+          CMD_ID=${{ steps.deploy.outputs.command }}
+          # 이미지를 새로 빌드하면 몇 분 걸린다. 최대 15분 기다린다.
+          for i in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$IID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Pending|InProgress|Delayed) sleep 10 ;; *) break ;; esac
+          done
+          echo "상태: $STATUS"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$IID" \
+            --query "[StandardOutputContent, StandardErrorContent]" --output text
+          [ "$STATUS" = "Success" ]
 
       - name: 헬스체크
         run: |
           for i in $(seq 1 30); do
-            if curl -sf --max-time 10 "https://${{ secrets.DEPLOY_HOST }}/health"; then
+            if curl -sf --max-time 10 "https://${{ steps.target.outputs.ip }}/health"; then
               echo; echo "배포 완료"; exit 0
             fi
             sleep 5

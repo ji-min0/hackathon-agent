@@ -84,42 +84,53 @@ docker compose restart app                 # .env 를 고쳤을 때
 `.github/workflows/ci-cd.yml`
 
 - **CI**: 모든 push·PR 에서 `make check`(ruff 린트·포맷, pytest)를 돌린다. 배포는 하지 않는다.
-- **CD**: main 에 push 되고 CI 가 통과하면 서버에 SSH 로 접속해 `git reset --hard origin/main` →
-  `docker compose up -d --build` → `https://<DEPLOY_HOST>/health` 확인. 서버 `.env` 는 그대로 둔다.
+- **CD**: main 에 push 되고 CI 가 통과하면 EC2 에 배포한다. **SSH 를 쓰지 않는다.**
 
-### 처음 한 번 설정
-
-배포 전용 SSH 키를 따로 만든다(사람이 쓰는 키와 분리해서, 문제가 생기면 이 키만 지운다).
-
-```bash
-# 1) 로컬에서 배포 키 만들기
-ssh-keygen -t ed25519 -N "" -C github-actions-deploy -f ~/.ssh/hackathon-deploy
-
-# 2) 서버에 공개 키 등록
-ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@52.78.121.248 \
-  "cat >> ~/.ssh/authorized_keys" < ~/.ssh/hackathon-deploy.pub
-
-# 3) GitHub Secrets 등록 (gh CLI)
-gh secret set DEPLOY_HOST --body 52.78.121.248
-gh secret set DEPLOY_USER --body ubuntu
-gh secret set DEPLOY_SSH_KEY < ~/.ssh/hackathon-deploy
-ssh-keyscan -t ed25519 52.78.121.248 2>/dev/null | gh secret set DEPLOY_KNOWN_HOSTS
+```
+GitHub Actions ──OIDC(임시 권한)──▶ IAM 역할 github-actions-deploy
+               ──SSM Run Command──▶ EC2 안의 SSM 에이전트
+                                     └ git reset --hard origin/main → docker compose up -d --build --wait
+               ──https://<IP>/health 확인
 ```
 
-4) 방화벽: GitHub Actions 러너는 IP 가 매번 바뀌므로 22번을 전체 허용한다. 비밀번호 로그인은
-꺼져 있고(Ubuntu 기본값) 등록한 키로만 들어올 수 있다.
+- GitHub 에 저장된 AWS 키·SSH 키가 없다. OIDC 는 이 레포의 main 브랜치 작업에만 몇 분짜리 권한을 준다.
+- 22번 포트를 열 필요가 없다(사람이 접속할 IP 만 허용).
+- 배포 대상은 `Name=hackathon-agent` 태그로 찾고, 공인 IP 도 거기서 읽는다.
 
-```bash
-aws ec2 authorize-security-group-ingress --region ap-northeast-2 --group-name hackathon-agent-sg \
-  --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=0.0.0.0/0,Description=github-actions}]"
-```
+### 처음 한 번 설정 (루트 또는 관리자로 IAM 콘솔)
+
+1. **자격 증명 공급자 추가**: OpenID Connect, URL `https://token.actions.githubusercontent.com`,
+   대상 `sts.amazonaws.com`.
+2. **역할 `github-actions-deploy`**: 웹 자격 증명 → 위 공급자 → 조직 `ji-min0`, 레포 `hackathon-agent`,
+   브랜치 `main`. 인라인 정책:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       { "Effect": "Allow", "Action": "ec2:DescribeInstances", "Resource": "*" },
+       { "Effect": "Allow", "Action": "ssm:SendCommand",
+         "Resource": "arn:aws:ssm:ap-northeast-2::document/AWS-RunShellScript" },
+       { "Effect": "Allow", "Action": "ssm:SendCommand",
+         "Resource": "arn:aws:ec2:ap-northeast-2:*:instance/*",
+         "Condition": { "StringEquals": { "aws:ResourceTag/Name": "hackathon-agent" } } },
+       { "Effect": "Allow", "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+         "Resource": "*" }
+     ]
+   }
+   ```
+
+   신뢰 정책의 `sub` 조건은 `repo:ji-min0/hackathon-agent:ref:refs/heads/main` 이어야 한다.
+   워크플로 job 에 `environment:` 를 넣으면 `sub` 가 `...:environment:<이름>` 으로 바뀌어 거절된다.
+3. **역할 `hackathon-agent-ec2`**: AWS 서비스 → EC2 → 정책 `AmazonSSMManagedInstanceCore`.
+   EC2 → 인스턴스 → 작업 → 보안 → IAM 역할 수정으로 연결한다. Ubuntu AMI 에는 SSM 에이전트가
+   기본 설치되어 있어 몇 분 안에 등록된다(늦으면 `sudo snap restart amazon-ssm-agent`).
+4. **GitHub Secret**: `gh secret set AWS_ROLE_ARN -b arn:aws:iam::<계정ID>:role/github-actions-deploy`
 
 ### NCP 로 옮기면
 
-1. 새 서버의 ACG 에서 22번을 전체 허용한다.
-2. 새 서버 계정(root)의 `~/.ssh/authorized_keys` 에 `~/.ssh/hackathon-deploy.pub` 을 추가한다.
-3. `DEPLOY_HOST`(새 IP), `DEPLOY_USER`(root), `DEPLOY_KNOWN_HOSTS`(새 서버 ssh-keyscan) 를 다시 등록한다.
-   `DEPLOY_SSH_KEY` 는 그대로 쓴다. 워크플로 파일은 고치지 않는다.
+이 CD 는 AWS 전용이다(OIDC·SSM). NCP 에서는 SSH 로 배포하는 방식으로 바꿔야 한다
+(git 이력의 `802de0d` 커밋에 SSH 방식 워크플로가 있다).
 
 ## AWS → NCP 로 옮기기
 
@@ -147,6 +158,7 @@ aws ec2 delete-key-pair --key-name hackathon-agent-key && rm ~/.ssh/hackathon-ag
 | 인스턴스 | `hackathon-agent`, m7i-flex.large(2vCPU/8GB, 무료 티어 대상), Ubuntu 24.04, 30GB gp3, 서울 |
 | 접속 | `ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@52.78.121.248` (22번은 등록한 IP 만 허용) |
 | CLI 권한 | IAM 사용자 `hackathon-deployer`(서울 EC2 작업만 허용 + `aws login`용 권한) |
+| CD 권한 | IAM 역할 `github-actions-deploy`(OIDC, main 브랜치만), 인스턴스 역할 `hackthon-agent-ec2`(SSM, 이름에 a 하나 빠짐) |
 
 팀원이 같은 NCP 안에 vLLM 을 띄우면 `.env` 의 `OPENAI_BASE_URL` 을 GPU 서버 **사설 IP** 주소
 (예: `http://10.0.1.5:8000/v1`)로 바꾸고 `docker compose restart app` 한다.
