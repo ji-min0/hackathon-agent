@@ -93,6 +93,36 @@ ALTER TABLE public.chat_logs    ENABLE ROW LEVEL SECURITY;
 
 
 -- ----------------------------------------------------------------------------
+-- 5. rag_chunks : RAG 문서 청크와 임베딩
+--    scripts/ingest.py 가 채운다. 서버는 질문 임베딩과 가까운 청크를 찾아 답의 근거로 쓴다.
+--    vector(768) 은 EMBEDDING_DIM 과 같아야 한다. 임베딩 모델을 바꿔 차원이 달라지면
+--    테이블을 지우고(DROP TABLE public.rag_chunks) 이 블록을 다시 실행한 뒤 ingest 한다.
+-- ----------------------------------------------------------------------------
+-- Supabase 는 확장을 extensions 스키마에 둔다. 서버 연결의 search_path 에 포함되어 있다.
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;
+
+CREATE TABLE IF NOT EXISTS public.rag_chunks (
+    id          BIGSERIAL    PRIMARY KEY,
+    source      TEXT         NOT NULL,
+    page        INTEGER,
+    chunk_index INTEGER      NOT NULL,
+    content     TEXT         NOT NULL,
+    embedding   vector(768)  NOT NULL,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- 코사인 거리(<=>) 검색용 HNSW 인덱스. 2000 차원까지만 만들 수 있다.
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_embedding
+    ON public.rag_chunks USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_source
+    ON public.rag_chunks (source);
+
+-- 다른 테이블과 같이 정책 없이 RLS 만 켜서 anon 키(PostgREST) 접근을 막는다.
+ALTER TABLE public.rag_chunks ENABLE ROW LEVEL SECURITY;
+
+
+-- ----------------------------------------------------------------------------
 -- 참고: LangGraph 체크포인트 테이블
 --
 --    checkpoints, checkpoint_writes, checkpoint_blobs, checkpoint_migrations 는
@@ -112,5 +142,5 @@ SELECT table_name,
            AND c.table_name   = t.table_name) AS column_count
   FROM information_schema.tables t
  WHERE t.table_schema = 'public'
-   AND t.table_name IN ('chat_threads', 'chat_logs')
+   AND t.table_name IN ('chat_threads', 'chat_logs', 'rag_chunks')
  ORDER BY table_name;

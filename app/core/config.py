@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     anthropic_timeout_seconds: int = 40
     gemini_model_name: str = "gemini-2.5-flash"
 
+    # RAG 임베딩. 바꾸면 scripts/ingest.py 로 문서를 다시 넣어야 한다.
+    embedding_provider: Literal["gemini", "openai"] = "gemini"
+    embedding_model: str = "gemini-embedding-001"
+    # rag_chunks.embedding 컬럼 차원과 같아야 한다(scripts/schema.sql 의 vector(768)).
+    embedding_dim: int = 768
+    # embedding_provider=openai 일 때 쓰는 OpenAI 호환 서버(vLLM 등) 주소와 키.
+    embedding_base_url: str | None = None
+    embedding_api_key: str = ""
+    # 질문 하나에 가져올 청크 수.
+    rag_top_k: int = 5
+
     # 웹 검색(Tavily). 비우면 search 로 분류된 질문도 general 이 답한다.
     tavily_api_key: str = ""
     tavily_max_results: int = 5
@@ -41,6 +52,7 @@ class Settings(BaseSettings):
     # 노드별 공급자. 비우면 main 과 같은 공급자를 쓴다.
     router_model_provider: Provider | None = None
     search_model_provider: Provider | None = None
+    rag_model_provider: Provider | None = None
     openai_timeout_seconds: int = 18
     gemini_timeout_seconds: int = 20
     ai_timeout_seconds: int = 60

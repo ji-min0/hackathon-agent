@@ -341,24 +341,13 @@ def tool_result(name: str, call_id: str) -> ToolMessage:
         (
             [HumanMessage("둘 다"), tool_result("search_agent", "c1")]
             + [tool_result("rag_agent", "c2"), AIMessage("종합")],
-            "search",
+            "rag+search",
         ),
+        ([HumanMessage("마감"), tool_result("search_documents", "c1"), AIMessage("13시")], "rag"),
     ],
 )
 def test_route_from_tools_counts_only_current_turn(messages, expected) -> None:
     assert agent.route_from_tools(messages) == expected
-
-
-def test_route_from_tools_joins_multiple_routes(monkeypatch) -> None:
-    monkeypatch.setitem(agent.TOOL_ROUTES, "rag_agent", "rag")
-    messages = [
-        HumanMessage("문서 마감일이랑 오늘 날씨"),
-        tool_result("search_agent", "c1"),
-        tool_result("rag_agent", "c2"),
-        AIMessage("종합"),
-    ]
-
-    assert agent.route_from_tools(messages) == "rag+search"
 
 
 @pytest.mark.asyncio
@@ -426,3 +415,98 @@ async def test_supervisor_delegates_self_contained_task_to_search_agent(monkeypa
     assert delegated[0].name == "search_agent"
     assert "부산 맑음" in delegated[0].content
     assert result["messages"][-1].content == "부산은 맑아요. (출처 포함)"
+
+
+def fake_document_tool(calls: list[str]):
+    @tool
+    def search_documents(query: str) -> str:
+        """Search documents."""
+        calls.append(query)
+        return "[guide.pdf p.2] 제출 마감은 11월 1일 13:00"
+
+    return search_documents
+
+
+def build_rag_graph(monkeypatch, rag_model, router, calls: list[str], **overrides):
+    monkeypatch.setattr(agent, "build_embeddings", lambda: None)
+    monkeypatch.setattr(
+        agent, "build_document_search_tool", lambda pool, embeddings: fake_document_tool(calls)
+    )
+    values = {
+        "agent_pattern": "router",
+        "main_model_provider": "main",
+        "summary_model_provider": "summary",
+        "router_model_provider": None,
+        "search_model_provider": None,
+        "rag_model_provider": "rag",
+        "summary_trigger_tokens": 8000,
+        "summary_keep_tokens": 4000,
+        "tavily_api_key": "",
+        **overrides,
+    }
+    models = {"main": fake_model("일반 답"), "summary": fake_model(), "rag": rag_model}
+    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
+    monkeypatch.setattr(agent, "build_router", lambda provider: router)
+    return agent.build_agent(InMemorySaver(), pool=object(), rag_sources=["guide.pdf"])
+
+
+@pytest.mark.asyncio
+async def test_rag_route_searches_documents_and_cites_them(monkeypatch) -> None:
+    calls: list[str] = []
+    rag_model = FakeToolModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "search_documents", "args": {"query": "제출 마감"}, "id": "d1"}
+                    ],
+                ),
+                AIMessage("11월 1일 13:00까지예요 (guide.pdf p.2)"),
+            ]
+        )
+    )
+    graph = build_rag_graph(monkeypatch, rag_model, fake_router("rag"), calls)
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "제출 마감 언제야?"}]}, thread_config("rag1")
+    )
+
+    assert calls == ["제출 마감"]
+    assert result["route"] == "rag"
+    assert result["messages"][-1].content == "11월 1일 13:00까지예요 (guide.pdf p.2)"
+
+
+@pytest.mark.asyncio
+async def test_rag_route_without_documents_goes_to_general(monkeypatch) -> None:
+    graph = build_test_graph(monkeypatch, fake_model("일반 답"), fake_model(), fake_router("rag"))
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "제출 마감"}]}, thread_config("rag2")
+    )
+
+    assert result["route"] == "rag"
+    assert result["messages"][-1].content == "일반 답"
+
+
+def test_router_input_lists_registered_documents() -> None:
+    documents = agent.format_documents(["guide.pdf", "rules.md"])
+
+    system, _ = agent.router_input([HumanMessage("마감 언제야?")], documents)
+
+    assert "- guide.pdf\n- rules.md" in system.content
+    assert agent.format_documents([]) == "No documents are registered yet."
+
+
+def test_format_passages_cites_source_and_page() -> None:
+    rows = [
+        {"source": "guide.pdf", "page": 2, "content": "마감 13시", "score": 0.81234},
+        {"source": "rules.md", "page": None, "content": "규칙", "score": 0.5},
+    ]
+
+    text = agent.format_passages(rows)
+
+    assert "[guide.pdf p.2] (score 0.81)\n마감 13시" in text
+    assert "[rules.md] (score 0.50)\n규칙" in text
+    assert agent.format_passages([]) == "No matching passages found in the documents."

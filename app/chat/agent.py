@@ -15,6 +15,8 @@
 """
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -27,6 +29,7 @@ from langchain.agents.middleware import (
     dynamic_prompt,
 )
 from langchain_anthropic import ChatAnthropic
+from langchain_core.embeddings import Embeddings
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
@@ -45,7 +48,8 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from pydantic import BaseModel, Field
 
 from app.chat.prompts import (
-    RAG_DOCUMENTS,
+    NO_RAG_DOCUMENTS,
+    RAG_PROMPT,
     ROUTER_PROMPT,
     SEARCH_PROMPT,
     SINGLE_PROMPT,
@@ -55,6 +59,8 @@ from app.chat.prompts import (
 )
 from app.core.config import settings
 from app.core.logging import log_event
+from app.rag import store
+from app.rag.embeddings import build_embeddings
 
 
 def build_openai_model() -> ChatOpenAI:
@@ -167,7 +173,12 @@ def build_router(provider: str):
     return build_model(provider) | PydanticOutputParser(pydantic_object=RouteDecision)
 
 
-def router_input(messages: list[AnyMessage]) -> list:
+def format_documents(sources: Sequence[str]) -> str:
+    """프롬프트의 {rag_documents} 자리에 넣을 문서 목록."""
+    return "\n".join(f"- {source}" for source in sources) or NO_RAG_DOCUMENTS
+
+
+def router_input(messages: list[AnyMessage], rag_documents: str = NO_RAG_DOCUMENTS) -> list:
     """분류기 입력을 만든다. 최근 대화를 텍스트 대본으로 바꿔 넘긴다.
 
     메시지 객체를 그대로 넘기면 tool call 과 tool 결과가 잘려 짝이 깨질 수 있고,
@@ -178,7 +189,7 @@ def router_input(messages: list[AnyMessage]) -> list:
     lines = [f"{'user' if isinstance(m, HumanMessage) else 'assistant'}: {m.text}" for m in history]
     transcript = "\n".join(lines) or "(no earlier turns)"
     return [
-        SystemMessage(ROUTER_PROMPT.format(rag_documents=RAG_DOCUMENTS)),
+        SystemMessage(ROUTER_PROMPT.format(rag_documents=rag_documents)),
         HumanMessage(
             f"<conversation>\n{transcript}\n</conversation>\n\n"
             f"<latest_message>\n{latest.text}\n</latest_message>"
@@ -186,12 +197,12 @@ def router_input(messages: list[AnyMessage]) -> list:
     ]
 
 
-def build_classify(router):
+def build_classify(router, rag_documents: str = NO_RAG_DOCUMENTS):
     """분류기 노드를 만든다. 분류가 실패해도 대화는 general 로 이어 간다."""
 
     async def classify(state: ChatState) -> dict:
         try:
-            decision = await router.ainvoke(router_input(state["messages"]))
+            decision = await router.ainvoke(router_input(state["messages"], rag_documents))
         except Exception as exc:
             log_event("route_failed", level=logging.WARNING, error=type(exc).__name__)
             return {"route": "general"}
@@ -282,16 +293,16 @@ def build_search_tool() -> TavilySearch:
 SEARCH_CALL_LIMIT = 2
 
 
-def dated_prompt(template: str):
+def dated_prompt(template: str, **fields: str):
     """호출 시점의 날짜를 {today} 에 넣는 프롬프트 미들웨어를 만든다.
 
-    서버가 며칠씩 떠 있어도 "오늘", "내일"이 맞게 풀린다.
+    서버가 며칠씩 떠 있어도 "오늘", "내일"이 맞게 풀린다. 나머지 자리는 fields 로 채운다.
     """
 
     @dynamic_prompt
     def prompt(request: ModelRequest) -> str:
         today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d (%A)")
-        return template.format(today=today)
+        return template.format(today=today, **fields)
 
     return prompt
 
@@ -311,8 +322,56 @@ def build_search_agent(main_model, summary_model):
     )
 
 
+def format_passages(rows: list[dict]) -> str:
+    """검색된 청크를 모델이 출처를 인용할 수 있는 형태로 이어 붙인다."""
+    if not rows:
+        return "No matching passages found in the documents."
+    blocks = []
+    for row in rows:
+        page = f" p.{row['page']}" if row["page"] is not None else ""
+        blocks.append(f"[{row['source']}{page}] (score {row['score']:.2f})\n{row['content']}")
+    return "\n\n---\n\n".join(blocks)
+
+
+def build_document_search_tool(pool, embeddings: Embeddings) -> BaseTool:
+    """등록된 문서에서 질문과 뜻이 가까운 청크를 찾는 툴."""
+
+    async def search_documents(query: str) -> str:
+        """Searches the registered internal documents and returns the most relevant passages
+        with their document name and page."""
+        vector = await embeddings.aembed_query(query)
+        return format_passages(await store.search(pool, vector, settings.rag_top_k))
+
+    return tool(search_documents)
+
+
+# RAG 에이전트가 한 번 답할 때 부를 수 있는 툴 횟수(문서 검색 2번 + 웹 검색 1번 정도).
+RAG_CALL_LIMIT = 3
+
+
+def build_rag_agent(rag_model, summary_model, document_tool: BaseTool, rag_documents: str):
+    """문서를 근거로 답하는 에이전트. 문서에 없으면 웹 검색으로 넘어간다(Agentic RAG)."""
+    tools = [document_tool]
+    if settings.tavily_api_key:
+        tools.append(build_search_tool())
+    return create_agent(
+        model=rag_model,
+        tools=tools,
+        middleware=[
+            dated_prompt(RAG_PROMPT, rag_documents=rag_documents),
+            ToolCallLimitMiddleware(run_limit=RAG_CALL_LIMIT),
+            build_summarization(summary_model),
+        ],
+    )
+
+
 # 툴 이름 → route. single·supervisor 패턴은 그 턴에 쓴 툴로 route 를 정한다.
-TOOL_ROUTES = {"tavily_search": "search", "search_agent": "search"}
+TOOL_ROUTES = {
+    "tavily_search": "search",
+    "search_agent": "search",
+    "search_documents": "rag",
+    "rag_agent": "rag",
+}
 
 # supervisor 가 한 번 답할 때 담당을 부를 수 있는 횟수. 프롬프트의 "at most 3 times" 와 맞춘다.
 SUPERVISOR_CALL_LIMIT = 3
@@ -362,39 +421,63 @@ def build_agent_tool(sub_agent, name: str, description: str) -> BaseTool:
     return tool(name, description=description)(run)
 
 
-def build_router_graph(main_model, summary_model, search_model) -> StateGraph:
+@dataclass(frozen=True)
+class GraphParts:
+    """패턴별 그래프가 공유하는 재료. 검색·RAG 가 꺼져 있으면 해당 값이 None 이다."""
+
+    main_model: object
+    summary_model: object
+    search_model: object | None
+    rag_model: object | None
+    document_tool: BaseTool | None
+    rag_documents: str
+
+
+def build_router_graph(parts: GraphParts) -> StateGraph:
     """라우터 + 전문 담당. 분류기가 담당 하나를 골라 보낸다."""
     router = build_router(settings.router_model_provider or settings.main_model_provider)
 
     graph = StateGraph(ChatState)
-    graph.add_node("classify", build_classify(router))
-    graph.add_node("general", build_agent_node(build_general_agent(main_model, summary_model)))
+    graph.add_node("classify", build_classify(router, parts.rag_documents))
+    general_agent = build_general_agent(parts.main_model, parts.summary_model)
+    graph.add_node("general", build_agent_node(general_agent))
 
-    # 검색 키가 없으면 search 노드를 만들지 않고 general 로 보낸다.
+    # 담당이 꺼져 있으면(키·문서 없음) 그 경로는 general 로 보낸다.
     destinations = {"general": "general", "search": "general", "rag": "general"}
-    if search_model is not None:
-        graph.add_node("search", build_agent_node(build_search_agent(search_model, summary_model)))
+    if parts.search_model is not None:
+        search_agent = build_search_agent(parts.search_model, parts.summary_model)
+        graph.add_node("search", build_agent_node(search_agent))
         graph.add_edge("search", END)
         destinations["search"] = "search"
+    if parts.rag_model is not None:
+        rag_agent = build_rag_agent(
+            parts.rag_model, parts.summary_model, parts.document_tool, parts.rag_documents
+        )
+        graph.add_node("rag", build_agent_node(rag_agent))
+        graph.add_edge("rag", END)
+        destinations["rag"] = "rag"
 
     graph.add_edge(START, "classify")
-    # TODO(3단계): rag 노드를 만들면 연결한다. 그 전까지는 general 이 답하되,
-    # 분류 결과(route)는 State 에 그대로 남긴다.
     graph.add_conditional_edges("classify", select_agent, destinations)
     graph.add_edge("general", END)
     return graph
 
 
-def build_single_graph(main_model, summary_model, search_model) -> StateGraph:
+def build_single_graph(parts: GraphParts) -> StateGraph:
     """단일 에이전트 + 도구. 에이전트 하나가 대화 맥락과 모든 툴을 다룬다."""
-    tools = [build_search_tool()] if search_model is not None else []
+    tools = []
+    if parts.document_tool is not None:
+        tools.append(parts.document_tool)
+    if parts.search_model is not None:
+        tools.append(build_search_tool())
     single_agent = create_agent(
-        model=main_model,
+        model=parts.main_model,
         tools=tools,
         middleware=[
-            dated_prompt(SINGLE_PROMPT),
-            ToolCallLimitMiddleware(run_limit=SEARCH_CALL_LIMIT),
-            build_summarization(summary_model),
+            dated_prompt(SINGLE_PROMPT, rag_documents=parts.rag_documents),
+            # 문서 검색과 웹 검색을 합쳐 RAG 에이전트와 같은 횟수까지 허용한다.
+            ToolCallLimitMiddleware(run_limit=RAG_CALL_LIMIT),
+            build_summarization(parts.summary_model),
         ],
     )
 
@@ -405,11 +488,23 @@ def build_single_graph(main_model, summary_model, search_model) -> StateGraph:
     return graph
 
 
-def build_supervisor_graph(main_model, summary_model, search_model) -> StateGraph:
+def build_supervisor_graph(parts: GraphParts) -> StateGraph:
     """Supervisor + 서브 에이전트. 상위 에이전트가 일을 나눠 맡기고 결과를 합친다."""
     tools = []
-    if search_model is not None:
-        search_agent = build_search_agent(search_model, summary_model)
+    if parts.rag_model is not None:
+        rag_agent = build_rag_agent(
+            parts.rag_model, parts.summary_model, parts.document_tool, parts.rag_documents
+        )
+        tools.append(
+            build_agent_tool(
+                rag_agent,
+                "rag_agent",
+                "Answers from the registered internal documents and cites the document name "
+                "and page. The task must be self-contained.",
+            )
+        )
+    if parts.search_model is not None:
+        search_agent = build_search_agent(parts.search_model, parts.summary_model)
         tools.append(
             build_agent_tool(
                 search_agent,
@@ -419,12 +514,12 @@ def build_supervisor_graph(main_model, summary_model, search_model) -> StateGrap
             )
         )
     supervisor = create_agent(
-        model=main_model,
+        model=parts.main_model,
         tools=tools,
         middleware=[
-            dated_prompt(SUPERVISOR_PROMPT),
+            dated_prompt(SUPERVISOR_PROMPT, rag_documents=parts.rag_documents),
             ToolCallLimitMiddleware(run_limit=SUPERVISOR_CALL_LIMIT),
-            build_summarization(summary_model),
+            build_summarization(parts.summary_model),
         ],
     )
 
@@ -442,8 +537,12 @@ GRAPH_BUILDERS = {
 }
 
 
-def build_agent(checkpointer):
-    """AGENT_PATTERN 에 맞는 그래프를 체크포인터와 함께 만든다. lifespan 에서 한 번만 호출한다."""
+def build_agent(checkpointer, pool=None, rag_sources: Sequence[str] = ()):
+    """AGENT_PATTERN 에 맞는 그래프를 체크포인터와 함께 만든다. lifespan 에서 한 번만 호출한다.
+
+    rag_sources 는 rag_chunks 에 들어 있는 문서 이름 목록이다. 비어 있으면 RAG 를 끈다.
+    문서를 새로 넣었으면(scripts/ingest.py) 서버를 다시 시작해야 반영된다.
+    """
     # 기본 상태에서는 main과 summary 모두 OpenAI 호환 모델을 쓴다.
     # 실패 시에는 Anthropic → Gemini 순서로 자동 전환한다.
     main_model = build_model(settings.main_model_provider)
@@ -454,6 +553,21 @@ def build_agent(checkpointer):
         if settings.tavily_api_key
         else None
     )
+    rag_enabled = pool is not None and bool(rag_sources)
+    rag_model = (
+        build_model(settings.rag_model_provider or settings.main_model_provider)
+        if rag_enabled
+        else None
+    )
+    document_tool = build_document_search_tool(pool, build_embeddings()) if rag_enabled else None
 
-    graph = GRAPH_BUILDERS[settings.agent_pattern](main_model, summary_model, search_model)
+    parts = GraphParts(
+        main_model=main_model,
+        summary_model=summary_model,
+        search_model=search_model,
+        rag_model=rag_model,
+        document_tool=document_tool,
+        rag_documents=format_documents(rag_sources),
+    )
+    graph = GRAPH_BUILDERS[settings.agent_pattern](parts)
     return graph.compile(checkpointer=checkpointer, name="chat_graph")

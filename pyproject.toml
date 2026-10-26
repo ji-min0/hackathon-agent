@@ -24,6 +24,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2",
     "supabase>=2.10",
     "langchain-tavily>=0.2.18",
+    "pymupdf>=2.0",
 ]
 
 [dependency-groups]

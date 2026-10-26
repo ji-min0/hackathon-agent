@@ -4,6 +4,7 @@
     uvicorn app.main:app --reload
 """
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -25,8 +26,18 @@ from app.core.db import create_pool, ping, secure_checkpoint_tables  # noqa: E40
 from app.core.errors import register_error_handlers  # noqa: E402
 from app.core.logging import log_event, setup_logging  # noqa: E402
 from app.core.middleware import RequestContextMiddleware  # noqa: E402
+from app.rag import store as rag_store  # noqa: E402
 from app.threads import router as threads_router  # noqa: E402
 from app.web import router as web_router  # noqa: E402
+
+
+async def load_rag_sources(pool) -> list[str]:
+    """RAG 문서 목록을 읽는다. 테이블이 아직 없어도 서버는 RAG 없이 뜬다."""
+    try:
+        return await rag_store.list_sources(pool)
+    except Exception as exc:
+        log_event("rag_sources_unavailable", level=logging.WARNING, error=type(exc).__name__)
+        return []
 
 
 @asynccontextmanager
@@ -44,7 +55,8 @@ async def lifespan(app: FastAPI):
 
     app.state.pool = pool
     app.state.checkpointer = checkpointer
-    app.state.agent = build_agent(checkpointer)
+    rag_sources = await load_rag_sources(pool)
+    app.state.agent = build_agent(checkpointer, pool=pool, rag_sources=rag_sources)
     # 동기 클라이언트는 네트워크 호출이 이벤트 루프를 막으므로 async 로 만든다.
     #
     # 클라이언트 하나를 모든 요청이 공유한다. 세션을 클라이언트에 저장하면
@@ -63,6 +75,7 @@ async def lifespan(app: FastAPI):
     log_event(
         "startup_complete",
         agent_pattern=settings.agent_pattern,
+        rag_documents=len(rag_sources),
         main_model=settings.model_label(settings.main_model_provider),
         summary_model=settings.model_label(settings.summary_model_provider),
         router_model=settings.model_label(
