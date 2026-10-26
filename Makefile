@@ -42,8 +42,8 @@ docker-build: ## Docker 이미지 빌드
 docker-run: ## Docker 컨테이너 실행 (.env 사용, localhost:8000)
 	docker run --rm --env-file .env -p 8000:8000 $(IMAGE)
 
-deploy: ## (서버에서) 빌드 후 실행. DOMAIN 필요. 예) make deploy DOMAIN=3-35-10-7.sslip.io
-	DOMAIN=$(DOMAIN) docker compose up -d --build
+deploy: ## (서버에서) 빌드 후 실행. 서버 .env 에 DOMAIN 이 있어야 한다
+	docker compose up -d --build
 
 deploy-logs: ## (서버에서) 앱 로그 보기
 	docker compose logs -f app

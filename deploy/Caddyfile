@@ -1,7 +1,20 @@
-# Caddy 는 DOMAIN 으로 들어온 요청에 HTTPS 인증서(Let's Encrypt)를 자동으로 발급·갱신하고
-# 앱 컨테이너로 넘긴다. 80 포트로 들어오면 https 로 돌려보낸다.
+# Caddy 는 앞단 웹 서버(리버스 프록시)다. DOMAIN 으로 들어온 HTTPS 요청을 받아 앱 컨테이너로 넘기고,
+# 인증서(Let's Encrypt)를 자동으로 발급·갱신한다. 80 포트로 들어오면 https 로 돌려보낸다.
+#
+# DOMAIN 에는 도메인(chat.example.com) 또는 서버 공인 IP(52.78.121.248)를 쓴다.
+# IP 로 쓸 때는 ACME_PROFILE=shortlived 가 필요하다. Let's Encrypt 의 IP 인증서는 유효기간이
+# 약 6일(160시간)뿐이라 이 프로필로만 발급되고, Caddy 가 이틀쯤마다 자동으로 갱신한다.
+# 도메인이면 기본값(classic, 90일 인증서)을 쓴다.
 {$DOMAIN} {
 	encode gzip
+
+	# IP 주소는 Caddy 기본값이 자체 서명 인증서라 브라우저 경고가 뜬다. Let's Encrypt 를 명시한다.
+	tls {
+		issuer acme {
+			profile {$ACME_PROFILE:classic}
+		}
+	}
+
 	# LLM 응답은 길게는 60초까지 걸린다.
 	reverse_proxy app:8000 {
 		transport http {

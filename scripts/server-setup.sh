@@ -3,6 +3,12 @@
 # 서버에서 한 번만 실행한다:  bash scripts/server-setup.sh
 set -euo pipefail
 
+# Ubuntu 기본 이미지에는 make 가 없다(make deploy 등에 필요).
+if ! command -v make >/dev/null 2>&1; then
+  echo "== make 설치"
+  sudo apt-get update -qq && sudo apt-get install -y -qq make
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "== Docker 설치"
   curl -fsSL https://get.docker.com | sudo sh

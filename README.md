@@ -1,6 +1,6 @@
 # AI 챗봇 서비스
 
-**배포 주소 — (AWS 배포 후 기입)** · 배포 방법은 [`docs/deploy.md`](docs/deploy.md)
+**배포 주소 — https://52.78.121.248** (AWS EC2) · 배포 방법은 [`docs/deploy.md`](docs/deploy.md)
 
 로그인한 사용자가 웹에서 질문하면 AI 가 답하고, 모든 대화가 DB 에 누적되는 서비스다.
 대화별로 문맥이 이어지며, 지난 대화를 언제든 다시 열어볼 수 있다.
@@ -433,15 +433,16 @@ curl -s "$BASE/api/threads/<thread_id>/messages" -b "access_token=$TOKEN"
 
 ## 배포
 
-AWS EC2 또는 NCP 서버 한 대에 Docker Compose 로 띄운다. 앞단의 Caddy 가 HTTPS 인증서를
-자동으로 발급하고, DB 는 Supabase 를 그대로 쓴다. 클라우드를 바꿔도 서버 안의 절차는 같다.
+AWS EC2 또는 NCP 서버 한 대에 Docker Compose 로 띄운다. 앞단의 Caddy(웹 서버)가 HTTPS 인증서를
+자동으로 발급·갱신하고(도메인 없이 공인 IP 로도 가능), DB 는 Supabase 를 그대로 쓴다.
+클라우드를 바꿔도 서버 안의 절차는 같다.
 
 ```bash
 # 서버에서 (처음 한 번)
 git clone https://github.com/ji-min0/hackathon-agent.git && cd hackathon-agent
 bash scripts/server-setup.sh          # Docker 설치, 메모리가 작으면 스왑 생성
 # 로컬에서 .env 를 서버로 복사한 뒤
-make deploy DOMAIN=3-35-10-7.sslip.io  # 도메인이 없으면 "IP(점을 -로).sslip.io"
+printf "DOMAIN=<공인 IP>\nACME_PROFILE=shortlived\n" >> .env && make deploy
 ```
 
 서버 만들기(AWS·NCP 콘솔), 업데이트, AWS → NCP 이전, 문제 해결은 [`docs/deploy.md`](docs/deploy.md) 참고.

@@ -1,6 +1,6 @@
 # 서버 배포용. AWS EC2, NCP 서버 등 Docker 가 있는 Ubuntu 서버면 어디서나 같다.
-#   DOMAIN=1-2-3-4.sslip.io docker compose up -d --build
-# 자세한 순서는 docs/deploy.md 참고.
+# 서버 .env 에 DOMAIN=<공인 IP>, ACME_PROFILE=shortlived 를 넣고 docker compose up -d --build (= make deploy)
+# compose 는 같은 폴더의 .env 를 읽어 ${DOMAIN} 을 채운다. 자세한 순서는 docs/deploy.md 참고.
 
 services:
   app:
@@ -32,8 +32,10 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      # 접속 주소. 도메인이 없으면 "서버IP(점을 -로).sslip.io" 를 쓴다. 예) 3-35-10-7.sslip.io
-      DOMAIN: ${DOMAIN:?DOMAIN 을 지정하세요. 예) DOMAIN=3-35-10-7.sslip.io}
+      # 접속 주소. 서버 공인 IP 또는 도메인. 예) 52.78.121.248, chat.example.com
+      DOMAIN: ${DOMAIN:?서버 .env 에 DOMAIN 을 넣으세요. 예) DOMAIN=52.78.121.248}
+      # IP 로 쓰면 shortlived(6일 인증서, 자동 갱신). 도메인이면 비워 둔다(classic).
+      ACME_PROFILE: ${ACME_PROFILE:-classic}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       # 발급받은 HTTPS 인증서를 보관한다. 지우면 다시 발급받는다.
