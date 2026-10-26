@@ -95,7 +95,6 @@ class Settings(BaseSettings):
     # 현재 코드 경로에서는 사용하지 않는다.
     # 데이터 접근은 DATABASE_URL 로 직접 하고, 인증은 anon 키로 충분하기 때문이다.
     # 관리자 전용 작업이 필요해지면 그때 채운다.
-    supabase_service_role_key: str = ""
 
     # 애플리케이션
     log_level: str = "INFO"

@@ -37,11 +37,6 @@ def load_pages(path: Path) -> list[tuple[int | None, str]]:
     return [(None, path.read_text(encoding="utf-8"))]
 
 
-def split_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """문단을 모아 size 이하의 청크로 자른다."""
-    return split_with_heading(text, size, overlap)[0]
-
-
 def split_with_heading(
     text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP, heading: str = ""
 ) -> tuple[list[str], str]:

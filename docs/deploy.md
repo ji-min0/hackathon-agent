@@ -64,7 +64,7 @@ ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@<IP> \
 ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@<IP> "cd hackathon-agent && ./scripts/deploy.sh"
 
 # 서버에 들어가 있다면
-cd ~/hackathon-agent && ./scripts/deploy.sh   # = make deploy
+cd ~/hackathon-agent && ./scripts/deploy.sh
 ```
 
 `scripts/deploy.sh` 는 `git pull --ff-only` → `docker compose up -d --build --wait`(app 이 healthy
@@ -115,8 +115,8 @@ NCP 에는 CloudFormation 이 없으므로 서버를 손으로 만든다. 서버
 2. 서버에서:
 
    ```bash
-   git clone https://github.com/ji-min0/hackathon-agent.git && cd hackathon-agent
-   bash scripts/server-setup.sh   # Docker·make 설치, 메모리가 작으면 스왑
+   curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $USER   # 다시 접속하면 적용
+   git clone https://github.com/ji-min0/hackathon-agent.git
    ```
 
 3. 위 "2. 서버에 `.env` 올리기"를 새 IP 로 하고 `./scripts/deploy.sh`. NCP 기본 계정은 `root` 다.

@@ -1,5 +1,5 @@
 # 서버 배포용. AWS EC2, NCP 서버 등 Docker 가 있는 Ubuntu 서버면 어디서나 같다.
-# 서버 .env 에 DOMAIN=<공인 IP>, ACME_PROFILE=shortlived 를 넣고 docker compose up -d --build (= make deploy)
+# 서버 .env 에 DOMAIN=<공인 IP>, ACME_PROFILE=shortlived 를 넣고 ./scripts/deploy.sh
 # compose 는 같은 폴더의 .env 를 읽어 ${DOMAIN} 을 채운다. 자세한 순서는 docs/deploy.md 참고.
 
 services:

@@ -75,8 +75,6 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           set -euxo pipefail
-          apt-get update -qq
-          apt-get install -y -qq make git
           curl -fsSL https://get.docker.com | sh
           usermod -aG docker ubuntu
           sudo -u ubuntu git clone -b ${Branch} https://github.com/${GitHubRepo}.git /home/ubuntu/${AppName}

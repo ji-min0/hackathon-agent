@@ -1,8 +1,12 @@
 """문서 청크 분할 테스트."""
 
 from app.rag import chunking
-from app.rag.chunking import chunk_document, split_text
+from app.rag.chunking import chunk_document, split_with_heading
 from app.rag.store import to_pgvector
+
+
+def split_text(text: str, **kwargs) -> list[str]:
+    return split_with_heading(text, **kwargs)[0]
 
 
 def test_paragraphs_are_grouped_under_size() -> None:

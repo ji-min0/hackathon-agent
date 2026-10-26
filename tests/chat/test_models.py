@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.chat import agent
+from app.chat import models
 
 
 class FakeChatOpenAI:
@@ -51,13 +51,13 @@ def test_openai_model_uses_configured_timeout_without_sdk_retry(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        agent,
+        models,
         "settings",
         model_settings(),
     )
-    monkeypatch.setattr(agent, "ChatOpenAI", FakeChatOpenAI)
+    monkeypatch.setattr(models, "ChatOpenAI", FakeChatOpenAI)
 
-    model = agent.build_openai_model()
+    model = models.build_openai_model()
 
     assert model.kwargs == {
         "model": "gpt-5-mini",
@@ -69,10 +69,10 @@ def test_openai_model_uses_configured_timeout_without_sdk_retry(
 
 
 def test_gemini_model_is_built_only_when_explicitly_selected(monkeypatch) -> None:
-    monkeypatch.setattr(agent, "settings", model_settings())
-    monkeypatch.setattr(agent, "ChatGoogleGenerativeAI", FakeChatGoogleGenerativeAI)
+    monkeypatch.setattr(models, "settings", model_settings())
+    monkeypatch.setattr(models, "ChatGoogleGenerativeAI", FakeChatGoogleGenerativeAI)
 
-    model = agent.build_model("gemini")
+    model = models.build_model("gemini")
 
     assert model.kwargs == {
         "model": "gemini-2.5-flash",
@@ -84,17 +84,17 @@ def test_gemini_model_is_built_only_when_explicitly_selected(monkeypatch) -> Non
 
 
 def test_gemini_model_requires_api_key(monkeypatch) -> None:
-    monkeypatch.setattr(agent, "settings", model_settings(gemini_api_key=""))
+    monkeypatch.setattr(models, "settings", model_settings(gemini_api_key=""))
 
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
-        agent.build_model("gemini")
+        models.build_model("gemini")
 
 
 def test_anthropic_model_requires_max_tokens_and_gateway_url(monkeypatch) -> None:
-    monkeypatch.setattr(agent, "settings", model_settings())
-    monkeypatch.setattr(agent, "ChatAnthropic", FakeChatAnthropic)
+    monkeypatch.setattr(models, "settings", model_settings())
+    monkeypatch.setattr(models, "ChatAnthropic", FakeChatAnthropic)
 
-    model = agent.build_model("anthropic")
+    model = models.build_model("anthropic")
 
     assert model.kwargs == {
         "model": "claude-haiku-4",
@@ -107,22 +107,22 @@ def test_anthropic_model_requires_max_tokens_and_gateway_url(monkeypatch) -> Non
 
 
 def test_anthropic_model_requires_api_key(monkeypatch) -> None:
-    monkeypatch.setattr(agent, "settings", model_settings(anthropic_api_key=""))
+    monkeypatch.setattr(models, "settings", model_settings(anthropic_api_key=""))
 
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
-        agent.build_model("anthropic")
+        models.build_model("anthropic")
 
 
 def test_openai_model_falls_back_to_anthropic_then_gemini(monkeypatch) -> None:
     anthropic_model = object()
     gemini_model = object()
     primary_model = FakeFallbackCapableModel()
-    monkeypatch.setattr(agent, "settings", model_settings())
-    monkeypatch.setattr(agent, "build_openai_model", lambda: primary_model)
-    monkeypatch.setattr(agent, "build_anthropic_model", lambda: anthropic_model)
-    monkeypatch.setattr(agent, "build_gemini_model", lambda: gemini_model)
+    monkeypatch.setattr(models, "settings", model_settings())
+    monkeypatch.setattr(models, "build_openai_model", lambda: primary_model)
+    monkeypatch.setattr(models, "build_anthropic_model", lambda: anthropic_model)
+    monkeypatch.setattr(models, "build_gemini_model", lambda: gemini_model)
 
-    model = agent.build_openai_fallback_model()
+    model = models.build_openai_fallback_model()
 
     assert model is primary_model
     assert primary_model.fallbacks == [anthropic_model, gemini_model]
@@ -131,11 +131,11 @@ def test_openai_model_falls_back_to_anthropic_then_gemini(monkeypatch) -> None:
 def test_openai_model_skips_providers_without_keys(monkeypatch) -> None:
     anthropic_model = object()
     primary_model = FakeFallbackCapableModel()
-    monkeypatch.setattr(agent, "settings", model_settings(gemini_api_key=""))
-    monkeypatch.setattr(agent, "build_openai_model", lambda: primary_model)
-    monkeypatch.setattr(agent, "build_anthropic_model", lambda: anthropic_model)
+    monkeypatch.setattr(models, "settings", model_settings(gemini_api_key=""))
+    monkeypatch.setattr(models, "build_openai_model", lambda: primary_model)
+    monkeypatch.setattr(models, "build_anthropic_model", lambda: anthropic_model)
 
-    agent.build_openai_fallback_model()
+    models.build_openai_fallback_model()
 
     assert primary_model.fallbacks == [anthropic_model]
 
@@ -143,10 +143,10 @@ def test_openai_model_skips_providers_without_keys(monkeypatch) -> None:
 def test_openai_model_without_fallback_keys_has_no_fallback(monkeypatch) -> None:
     primary_model = object()
     monkeypatch.setattr(
-        agent,
+        models,
         "settings",
         model_settings(gemini_api_key="", anthropic_api_key=""),
     )
-    monkeypatch.setattr(agent, "build_openai_model", lambda: primary_model)
+    monkeypatch.setattr(models, "build_openai_model", lambda: primary_model)
 
-    assert agent.build_openai_fallback_model() is primary_model
+    assert models.build_openai_fallback_model() is primary_model

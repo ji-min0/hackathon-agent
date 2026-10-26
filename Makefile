@@ -2,9 +2,7 @@
 # 모든 명령은 uv 가상환경(.venv)에서 실행된다.
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev test cov lint format check fix docker-build docker-run deploy deploy-logs clean
-
-IMAGE ?= chatbot-api
+.PHONY: help install dev test test-db cov lint format check fix clean
 
 help: ## 명령 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -17,6 +15,12 @@ dev: ## 로컬 서버 실행 (코드 변경 시 자동 재시작)
 
 test: ## 테스트
 	uv run pytest
+
+test-db: ## 실제 PostgreSQL(pgvector)로 관리자·RAG SQL 테스트 (Docker 필요)
+	@docker run -d --rm --name chatbot-test-db -e POSTGRES_PASSWORD=test -p 55432:5432 pgvector/pgvector:pg17 > /dev/null
+	@until docker exec chatbot-test-db psql -U postgres -c "select 1" > /dev/null 2>&1; do sleep 1; done
+	@TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres uv run pytest tests/integration; \
+		status=$$?; docker stop chatbot-test-db > /dev/null; exit $$status
 
 cov: ## 테스트 + 커버리지 리포트 (htmlcov/index.html 도 생성)
 	uv run pytest --cov --cov-report=term --cov-report=html
@@ -35,18 +39,6 @@ check: ## 커밋 전 전체 점검 (린트 → 포맷 → 테스트)
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run pytest --cov --cov-report=term
-
-docker-build: ## Docker 이미지 빌드
-	docker build -t $(IMAGE) .
-
-docker-run: ## Docker 컨테이너 실행 (.env 사용, localhost:8000)
-	docker run --rm --env-file .env -p 8000:8000 $(IMAGE)
-
-deploy: ## (서버에서) git pull 후 다시 빌드·실행. 서버 .env 에 DOMAIN 이 있어야 한다
-	./scripts/deploy.sh
-
-deploy-logs: ## (서버에서) 앱 로그 보기
-	docker compose logs -f app
 
 clean: ## 캐시 정리
 	find . -name "__pycache__" -type d -prune -not -path "./.venv/*" -exec rm -rf {} +

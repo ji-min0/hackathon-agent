@@ -72,15 +72,33 @@ def approval_text(pending: list[dict]) -> str:
 
 
 # 승인 대기 중에 채팅으로 온 짧은 답을 승인·거절로 읽는다. 앞부분만 맞으면 된다("네 해주세요").
-APPROVE_WORDS = ("네", "예", "응", "ㅇㅇ", "그래", "좋아", "승인", "진행", "해줘", "ok", "yes")
+APPROVE_WORDS = (
+    "네",
+    "예",
+    "응",
+    "ㅇㅇ",
+    "ㅇㅋ",
+    "오케이",
+    "ㄱㄱ",
+    "고고",
+    "그래",
+    "좋아",
+    "승인",
+    "진행",
+    "해줘",
+    "ok",
+    "yes",
+)
 REJECT_WORDS = ("아니", "아뇨", "싫어", "거절", "취소", "하지마", "ㄴㄴ", "no")
 # 이보다 길면 예/아니오 답이 아니라 새 질문으로 본다("아니 그냥 환율 알려줘").
 DECISION_MAX_LENGTH = 7
 
 
 def parse_decision(text: str) -> Decision | None:
-    normalized = re.sub(r"[\s.,!?~ㅎㅋ]", "", text.lower())
-    if not normalized or len(normalized) > DECISION_MAX_LENGTH:
+    normalized = re.sub(r"[\s.,!?~]", "", text.lower())
+    # 끝에 붙은 웃음(ㅋㅋ, ㅎㅎ)은 길이에서 뺀다. 단어 비교에는 남겨 둬야 "ㅇㅋ"를 읽는다.
+    core = re.sub(r"[ㅋㅎ]+$", "", normalized)
+    if not core or len(core) > DECISION_MAX_LENGTH:
         return None
     # 애매할 때 실행하지 않는 쪽이 안전해서 거절을 먼저 확인한다.
     if normalized.startswith(REJECT_WORDS):

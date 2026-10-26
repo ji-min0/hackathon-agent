@@ -101,6 +101,7 @@ uv run python scripts/ingest.py "docs/문서.pdf"   # pdf · md · txt
 ```bash
 make check    # ruff 린트·포맷 검사 + pytest(커버리지). 커밋 전에 돌린다
 make fix      # 린트 자동 수정 + 포맷
+make test-db  # Docker 로 pgvector Postgres 를 잠깐 띄워 관리자·RAG SQL 을 실제로 확인
 ```
 
 테스트는 실제 DB·LLM 을 부르지 않는다(가짜 모델과 메모리 체크포인터). 실제 모델로 그래프를 확인하려면
@@ -114,13 +115,13 @@ app/
 ├─ core/          설정, DB 풀, 로깅, 미들웨어, 예외
 ├─ auth/          회원가입·로그인·토큰 검증
 ├─ threads/       대화방 CRUD
-├─ chat/          메시지 전송, 그래프(agent.py), 프롬프트(prompts.py)
+├─ chat/          메시지 전송, 그래프(agent.py), 모델 공급자(models.py), 프롬프트(prompts.py)
 ├─ rag/           청크 분할, 임베딩, pgvector 저장·검색
 ├─ admin/         관리자 API(대시보드·프롬프트 버전)
 └─ web/           Jinja2 화면 라우터
 
 templates/, static/   웹 화면(채팅·로그인·관리자)
-scripts/              schema.sql, ingest.py, deploy.sh, server-setup.sh, check_graph.py
+scripts/              schema.sql, ingest.py, deploy.sh, check_graph.py
 deploy/               Caddyfile, aws/ec2-cfn.yml(CloudFormation)
 docs/deploy.md        배포 절차
 ```
@@ -141,7 +142,7 @@ Docker Compose 로 앱과 Caddy 를 띄운다.
 
 ```bash
 # main 에 push 한 뒤 로컬에서 한 번에 배포 (git pull → 빌드·실행)
-ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@<IP> "cd hackathon-agent && make deploy"
+ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@<IP> "cd hackathon-agent && ./scripts/deploy.sh"
 ```
 
 스택 만들기, `.env` 올리기, NCP 로 옮기기는 [`docs/deploy.md`](docs/deploy.md) 참고.
