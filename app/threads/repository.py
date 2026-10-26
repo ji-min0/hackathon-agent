@@ -38,16 +38,13 @@ async def list_by_user(pool: AsyncConnectionPool, user_id: UUID) -> list[dict]:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cursor:
             await cursor.execute(
-                f"SELECT {COLUMNS} FROM chat_threads "
-                "WHERE user_id = %s ORDER BY updated_at DESC",
+                f"SELECT {COLUMNS} FROM chat_threads WHERE user_id = %s ORDER BY updated_at DESC",
                 (user_id,),
             )
             return await cursor.fetchall()
 
 
-async def get_owned(
-    pool: AsyncConnectionPool, thread_id: UUID, user_id: UUID
-) -> dict | None:
+async def get_owned(pool: AsyncConnectionPool, thread_id: UUID, user_id: UUID) -> dict | None:
     """소유권까지 함께 확인한다. 없거나 남의 것이면 None.
 
     라우터는 None 을 받으면 403 이 아니라 404 로 응답한다.
@@ -56,8 +53,7 @@ async def get_owned(
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cursor:
             await cursor.execute(
-                f"SELECT {COLUMNS} FROM chat_threads "
-                "WHERE id = %s AND user_id = %s",
+                f"SELECT {COLUMNS} FROM chat_threads WHERE id = %s AND user_id = %s",
                 (thread_id, user_id),
             )
             return await cursor.fetchone()

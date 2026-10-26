@@ -17,8 +17,8 @@ import logging
 import time
 from uuid import UUID
 
-from app.chat.concurrency import thread_run_guard
 from app.chat import repository
+from app.chat.concurrency import thread_run_guard
 from app.core.config import settings
 from app.core.errors import AITimeout, AIUpstreamError, Conflict
 from app.core.logging import log_event

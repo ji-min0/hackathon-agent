@@ -70,9 +70,7 @@ async def main() -> None:
     )
 
     async def invoke_main_fallback():
-        result = await main_agent.ainvoke(
-            {"messages": [{"role": "user", "content": Prompt}]}
-        )
+        result = await main_agent.ainvoke({"messages": [{"role": "user", "content": Prompt}]})
         return result["messages"][-1]
 
     await measure("main_openai_to_gemini", invoke_main_fallback)

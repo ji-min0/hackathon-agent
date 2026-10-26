@@ -70,9 +70,7 @@ async def sign_up(client: AsyncClient, email: str, password: str) -> AuthUser:
         # 형식 오류는 사용자가 고칠 수 있는 문제이므로 422 로 돌려준다.
         # Supabase 는 일부 도메인(example.com 등)을 유효하지 않은 것으로 거부한다.
         if exc.status in (400, 422):
-            raise InvalidInput(
-                "이메일 또는 비밀번호를 확인해 주세요.", detail=exc.message
-            ) from exc
+            raise InvalidInput("이메일 또는 비밀번호를 확인해 주세요.", detail=exc.message) from exc
 
         raise AppError("회원가입에 실패했습니다.", detail=exc.message) from exc
 
@@ -89,19 +87,13 @@ async def sign_in(client: AsyncClient, email: str, password: str) -> AuthSession
     구분하면 어떤 이메일이 가입되어 있는지 알려 주는 셈이 된다.
     """
     try:
-        response = await client.auth.sign_in_with_password(
-            {"email": email, "password": password}
-        )
+        response = await client.auth.sign_in_with_password({"email": email, "password": password})
     except AuthApiError as exc:
         # 이메일 확인이 켜져 있으면 인증 전까지 로그인이 막힌다.
         # 자격 증명 문제와 구분해 안내해야 원인을 찾을 수 있다.
         if "not confirmed" in exc.message.lower():
-            raise Unauthorized(
-                "이메일 인증이 완료되지 않았습니다.", detail=exc.message
-            ) from exc
-        raise Unauthorized(
-            "이메일 또는 비밀번호가 올바르지 않습니다.", detail=exc.message
-        ) from exc
+            raise Unauthorized("이메일 인증이 완료되지 않았습니다.", detail=exc.message) from exc
+        raise Unauthorized("이메일 또는 비밀번호가 올바르지 않습니다.", detail=exc.message) from exc
 
     if response.session is None or response.user is None:
         # 이메일 확인이 켜져 있으면 세션 없이 돌아온다.

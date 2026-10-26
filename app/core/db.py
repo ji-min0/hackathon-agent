@@ -52,9 +52,9 @@ async def secure_checkpoint_tables(pool: AsyncConnectionPool) -> None:
     async with pool.connection() as conn:
         for table in CHECKPOINT_TABLES:
             await conn.execute(
-                sql.SQL(
-                    "ALTER TABLE IF EXISTS public.{} ENABLE ROW LEVEL SECURITY"
-                ).format(sql.Identifier(table))
+                sql.SQL("ALTER TABLE IF EXISTS public.{} ENABLE ROW LEVEL SECURITY").format(
+                    sql.Identifier(table)
+                )
             )
 
 

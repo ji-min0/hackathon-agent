@@ -39,8 +39,8 @@ async def login(
     response.set_cookie(
         ACCESS_TOKEN_COOKIE,
         session.access_token,
-        httponly=True,                    # JavaScript 접근 차단
-        secure=settings.cookie_secure,     # 배포(HTTPS)에서는 true
+        httponly=True,  # JavaScript 접근 차단
+        secure=settings.cookie_secure,  # 배포(HTTPS)에서는 true
         samesite="lax",
         max_age=session.expires_in,
         path="/",

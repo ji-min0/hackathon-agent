@@ -100,9 +100,7 @@ async def test_update_title_checks_ownership_before_returning_thread() -> None:
     row = {"id": thread_id, "title": "새 제목"}
     cursor = FakeCursor([row])
 
-    thread = await repository.update_title(
-        FakePool(cursor), thread_id, user_id, "새 제목"
-    )
+    thread = await repository.update_title(FakePool(cursor), thread_id, user_id, "새 제목")
 
     assert thread == row
     assert "UPDATE chat_threads SET title = %s" in cursor.query

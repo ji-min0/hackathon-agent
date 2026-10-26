@@ -19,9 +19,7 @@ class MessageRequest(BaseModel):
         if not stripped:
             raise ValueError("메시지를 입력해 주세요.")
         if len(stripped) > settings.max_message_length:
-            raise ValueError(
-                f"메시지는 {settings.max_message_length}자를 넘을 수 없습니다."
-            )
+            raise ValueError(f"메시지는 {settings.max_message_length}자를 넘을 수 없습니다.")
         return stripped
 
 
