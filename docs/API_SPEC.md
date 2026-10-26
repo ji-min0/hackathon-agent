@@ -622,7 +622,8 @@ POST /api/threads/{thread_id}/messages
 }
 ```
 
-`route` 는 의도 분류기가 고른 경로다(`rag` | `search` | `general`). 디버깅·대시보드용이다.
+`route` 는 답한 경로다(`rag` | `search` | `general`). `AGENT_PATTERN` 이 single·supervisor 이면
+그 턴에 실제로 쓴 툴로 정하고, 여러 담당을 쓰면 `rag+search` 처럼 합친다. 디버깅·대시보드용이다.
 
 **오류 발생 시** — LLM 호출 실패나 타임아웃도 `chat_logs` 에 기록한다.
 

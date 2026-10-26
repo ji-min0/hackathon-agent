@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # 웹 검색(Tavily). 비우면 search 로 분류된 질문도 general 이 답한다.
     tavily_api_key: str = ""
     tavily_max_results: int = 5
+    # 멀티 에이전트 연결 방식. router: 분류기가 담당 하나를 고른다 / single: 에이전트
+    # 하나가 모든 툴을 쓴다 / supervisor: 상위 에이전트가 담당들을 툴처럼 불러 결과를 합친다.
+    agent_pattern: Literal["router", "single", "supervisor"] = "router"
+
     main_model_provider: Provider = "openai"
     summary_model_provider: Provider = "openai"
     # 노드별 공급자. 비우면 main 과 같은 공급자를 쓴다.

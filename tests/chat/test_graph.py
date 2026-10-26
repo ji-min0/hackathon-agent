@@ -27,18 +27,18 @@ class FakeToolModel(GenericFakeChatModel):
 
 def tool_call(query: str, call_id: str) -> AIMessage:
     return AIMessage(
-        content="", tool_calls=[{"name": "web_search", "args": {"query": query}, "id": call_id}]
+        content="", tool_calls=[{"name": "tavily_search", "args": {"query": query}, "id": call_id}]
     )
 
 
 def fake_search_tool(calls: list[str]):
     @tool
-    def web_search(query: str) -> str:
+    def tavily_search(query: str) -> str:
         """Search the web."""
         calls.append(query)
         return f"{query} 결과: 맑음 18도"
 
-    return web_search
+    return tavily_search
 
 
 def fake_router(route: str = "general") -> RunnableLambda:
@@ -58,6 +58,7 @@ def build_test_graph(monkeypatch, main_model, summary_model, router=None, **over
         "summary_model_provider": "summary",
         "summary_trigger_tokens": 8000,
         "summary_keep_tokens": 4000,
+        "agent_pattern": "router",
         "router_model_provider": None,
         "search_model_provider": None,
         "tavily_api_key": "",
@@ -299,6 +300,7 @@ def test_node_providers_default_to_main(
     models: list[str] = []
     routers: list[str] = []
     values = {
+        "agent_pattern": "router",
         "main_model_provider": "main",
         "summary_model_provider": "summary",
         "router_model_provider": None,
@@ -319,3 +321,108 @@ def test_node_providers_default_to_main(
 
     assert models == expected_models
     assert routers == expected_router
+
+
+def tool_result(name: str, call_id: str) -> ToolMessage:
+    return ToolMessage(content="결과", name=name, tool_call_id=call_id)
+
+
+@pytest.mark.parametrize(
+    ("messages", "expected"),
+    [
+        ([HumanMessage("안녕"), AIMessage("안녕하세요")], "general"),
+        ([HumanMessage("날씨"), tool_result("tavily_search", "c1"), AIMessage("맑음")], "search"),
+        # 이전 턴의 검색은 세지 않는다.
+        (
+            [HumanMessage("날씨"), tool_result("tavily_search", "c1"), AIMessage("맑음")]
+            + [HumanMessage("고마워"), AIMessage("천만에요")],
+            "general",
+        ),
+        (
+            [HumanMessage("둘 다"), tool_result("search_agent", "c1")]
+            + [tool_result("rag_agent", "c2"), AIMessage("종합")],
+            "search",
+        ),
+    ],
+)
+def test_route_from_tools_counts_only_current_turn(messages, expected) -> None:
+    assert agent.route_from_tools(messages) == expected
+
+
+def test_route_from_tools_joins_multiple_routes(monkeypatch) -> None:
+    monkeypatch.setitem(agent.TOOL_ROUTES, "rag_agent", "rag")
+    messages = [
+        HumanMessage("문서 마감일이랑 오늘 날씨"),
+        tool_result("search_agent", "c1"),
+        tool_result("rag_agent", "c2"),
+        AIMessage("종합"),
+    ]
+
+    assert agent.route_from_tools(messages) == "rag+search"
+
+
+@pytest.mark.asyncio
+async def test_single_pattern_uses_tools_directly_and_records_route(monkeypatch) -> None:
+    calls: list[str] = []
+    model = FakeToolModel(messages=iter([tool_call("서울 날씨", "c1"), AIMessage("맑음이에요.")]))
+    monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool(calls))
+    graph = build_test_graph(
+        monkeypatch, model, fake_model(), agent_pattern="single", tavily_api_key="k"
+    )
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "오늘 서울 날씨"}]}, thread_config("p1")
+    )
+
+    assert calls == ["서울 날씨"]
+    assert result["route"] == "search"
+    assert result["messages"][-1].content == "맑음이에요."
+
+
+@pytest.mark.asyncio
+async def test_supervisor_delegates_self_contained_task_to_search_agent(monkeypatch) -> None:
+    calls: list[str] = []
+    # main 은 supervisor, search 모델은 검색 담당이 쓴다. 공급자를 나눠 각자 답을 정한다.
+    supervisor_model = FakeToolModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "search_agent", "args": {"task": "오늘 부산 날씨"}, "id": "s1"}
+                    ],
+                ),
+                AIMessage("부산은 맑아요. (출처 포함)"),
+            ]
+        )
+    )
+    search_model = FakeToolModel(
+        messages=iter([tool_call("부산 날씨", "t1"), AIMessage("부산 맑음, 출처: example.com")])
+    )
+    models = {"main": supervisor_model, "summary": fake_model(), "search": search_model}
+    values = {
+        "agent_pattern": "supervisor",
+        "main_model_provider": "main",
+        "summary_model_provider": "summary",
+        "router_model_provider": None,
+        "search_model_provider": "search",
+        "summary_trigger_tokens": 8000,
+        "summary_keep_tokens": 4000,
+        "tavily_api_key": "k",
+    }
+    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
+    monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool(calls))
+    graph = agent.build_agent(InMemorySaver())
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "오늘 날씨 어때?"}]}, thread_config("p2")
+    )
+
+    assert calls == ["부산 날씨"]
+    assert result["route"] == "search"
+    # 담당의 답이 supervisor 에게 툴 결과로 돌아간다.
+    delegated = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert delegated[0].name == "search_agent"
+    assert "부산 맑음" in delegated[0].content
+    assert result["messages"][-1].content == "부산은 맑아요. (출처 포함)"

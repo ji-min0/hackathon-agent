@@ -5,9 +5,11 @@
 1. FastAPI 는 과거 대화를 다시 조립하지 않는다. 현재 질문만 넘긴다.
 2. 같은 thread_id 를 넘기면 체크포인터가 이전 State 를 복구한다.
 
-멀티 에이전트 그래프 흐름
+멀티 에이전트 연결 방식 (AGENT_PATTERN)
 
-    START → classify(의도 분류기) → general | search | rag → END
+    router      START → classify(의도 분류기) → general | search | rag → END
+    single      START → single(모든 툴을 가진 에이전트 하나) → END
+    supervisor  START → supervisor(담당 에이전트를 툴로 호출해 결과 종합) → END
 
 자세한 내용은 docs/API_SPEC.md 5장 참고.
 """
@@ -31,8 +33,10 @@ from langchain_core.messages import (
     HumanMessage,
     RemoveMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.tools import BaseTool, tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
@@ -44,7 +48,9 @@ from app.chat.prompts import (
     RAG_DOCUMENTS,
     ROUTER_PROMPT,
     SEARCH_PROMPT,
+    SINGLE_PROMPT,
     SUMMARY_PROMPT,
+    SUPERVISOR_PROMPT,
     SYSTEM_PROMPT,
 )
 from app.core.config import settings
@@ -134,8 +140,9 @@ Route = Literal["rag", "search", "general"]
 class ChatState(MessagesState):
     """그래프 전체가 공유하는 State. messages 는 MessagesState 가 정의한다."""
 
-    # 분류기가 고른 경로. 응답·로그에 함께 남겨 디버깅과 대시보드에 쓴다.
-    route: Route
+    # 답한 경로. router 는 분류기가 고른 값, single·supervisor 는 그 턴에 쓴 툴로 정한다.
+    # 응답·로그에 함께 남겨 디버깅과 대시보드에 쓴다.
+    route: str
 
 
 class RouteDecision(BaseModel):
@@ -275,11 +282,18 @@ def build_search_tool() -> TavilySearch:
 SEARCH_CALL_LIMIT = 2
 
 
-@dynamic_prompt
-def search_prompt(request: ModelRequest) -> str:
-    """호출 시점의 날짜를 넣는다. 서버가 며칠씩 떠 있어도 "오늘"이 맞게 풀린다."""
-    today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d (%A)")
-    return SEARCH_PROMPT.format(today=today)
+def dated_prompt(template: str):
+    """호출 시점의 날짜를 {today} 에 넣는 프롬프트 미들웨어를 만든다.
+
+    서버가 며칠씩 떠 있어도 "오늘", "내일"이 맞게 풀린다.
+    """
+
+    @dynamic_prompt
+    def prompt(request: ModelRequest) -> str:
+        today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d (%A)")
+        return template.format(today=today)
+
+    return prompt
 
 
 def build_search_agent(main_model, summary_model):
@@ -288,7 +302,7 @@ def build_search_agent(main_model, summary_model):
         model=main_model,
         tools=[build_search_tool()],
         middleware=[
-            search_prompt,
+            dated_prompt(SEARCH_PROMPT),
             # 검색 반복으로 60초 제한을 넘기지 않게 한 번 답할 때 최대 2번만 검색한다.
             # 넘으면 툴 대신 에러 메시지를 돌려주고, 모델은 가진 결과로 답한다.
             ToolCallLimitMiddleware(run_limit=SEARCH_CALL_LIMIT),
@@ -297,24 +311,59 @@ def build_search_agent(main_model, summary_model):
     )
 
 
-def build_agent_node(sub_agent):
-    """하위 에이전트를 부모 그래프의 노드 함수로 감싼다."""
+# 툴 이름 → route. single·supervisor 패턴은 그 턴에 쓴 툴로 route 를 정한다.
+TOOL_ROUTES = {"tavily_search": "search", "search_agent": "search"}
+
+# supervisor 가 한 번 답할 때 담당을 부를 수 있는 횟수. 프롬프트의 "at most 3 times" 와 맞춘다.
+SUPERVISOR_CALL_LIMIT = 3
+
+
+def route_from_tools(messages: list[AnyMessage]) -> str:
+    """마지막 사용자 질문 뒤에 쓴 툴로 route 를 정한다. 여러 개면 "rag+search" 처럼 합친다."""
+    last_question = max(
+        (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=0
+    )
+    used = {
+        TOOL_ROUTES[m.name]
+        for m in messages[last_question:]
+        if isinstance(m, ToolMessage) and m.name in TOOL_ROUTES
+    }
+    return "+".join(sorted(used)) or "general"
+
+
+def build_agent_node(sub_agent, *, track_route: bool = False):
+    """하위 에이전트를 부모 그래프의 노드 함수로 감싼다.
+
+    track_route 를 켜면 그 턴에 쓴 툴로 route 도 기록한다(분류기가 없는 패턴용).
+    """
 
     async def node(state: ChatState) -> dict:
         messages = strip_message_names(state["messages"])
         result = await sub_agent.ainvoke({"messages": messages})
-        return {"messages": replace_messages(result["messages"])}
+        update = {"messages": replace_messages(result["messages"])}
+        if track_route:
+            update["route"] = route_from_tools(result["messages"])
+        return update
 
     return node
 
 
-def build_agent(checkpointer):
-    """체크포인터를 물린 멀티 에이전트 그래프를 만든다. lifespan 에서 한 번만 호출한다."""
-    # 기본 상태에서는 main과 summary 모두 OpenAI 호환 모델을 쓴다.
-    # 실패 시에는 Anthropic → Gemini 순서로 자동 전환한다.
-    main_model = build_model(settings.main_model_provider)
-    summary_model = build_model(settings.summary_model_provider)
-    # 노드별 공급자를 비우면 main 과 같은 공급자를 쓴다.
+def build_agent_tool(sub_agent, name: str, description: str) -> BaseTool:
+    """담당 에이전트를 supervisor 가 부를 수 있는 툴로 감싼다.
+
+    담당은 대화 기록을 보지 못하고 task 문장만 받는다. 필요한 정보는 supervisor 가
+    task 에 담아야 한다(프롬프트에 적어 둠).
+    """
+
+    async def run(task: str) -> str:
+        result = await sub_agent.ainvoke({"messages": [HumanMessage(content=task)]})
+        return result["messages"][-1].text
+
+    return tool(name, description=description)(run)
+
+
+def build_router_graph(main_model, summary_model, search_model) -> StateGraph:
+    """라우터 + 전문 담당. 분류기가 담당 하나를 골라 보낸다."""
     router = build_router(settings.router_model_provider or settings.main_model_provider)
 
     graph = StateGraph(ChatState)
@@ -323,8 +372,7 @@ def build_agent(checkpointer):
 
     # 검색 키가 없으면 search 노드를 만들지 않고 general 로 보낸다.
     destinations = {"general": "general", "search": "general", "rag": "general"}
-    if settings.tavily_api_key:
-        search_model = build_model(settings.search_model_provider or settings.main_model_provider)
+    if search_model is not None:
         graph.add_node("search", build_agent_node(build_search_agent(search_model, summary_model)))
         graph.add_edge("search", END)
         destinations["search"] = "search"
@@ -334,5 +382,78 @@ def build_agent(checkpointer):
     # 분류 결과(route)는 State 에 그대로 남긴다.
     graph.add_conditional_edges("classify", select_agent, destinations)
     graph.add_edge("general", END)
+    return graph
 
+
+def build_single_graph(main_model, summary_model, search_model) -> StateGraph:
+    """단일 에이전트 + 도구. 에이전트 하나가 대화 맥락과 모든 툴을 다룬다."""
+    tools = [build_search_tool()] if search_model is not None else []
+    single_agent = create_agent(
+        model=main_model,
+        tools=tools,
+        middleware=[
+            dated_prompt(SINGLE_PROMPT),
+            ToolCallLimitMiddleware(run_limit=SEARCH_CALL_LIMIT),
+            build_summarization(summary_model),
+        ],
+    )
+
+    graph = StateGraph(ChatState)
+    graph.add_node("single", build_agent_node(single_agent, track_route=True))
+    graph.add_edge(START, "single")
+    graph.add_edge("single", END)
+    return graph
+
+
+def build_supervisor_graph(main_model, summary_model, search_model) -> StateGraph:
+    """Supervisor + 서브 에이전트. 상위 에이전트가 일을 나눠 맡기고 결과를 합친다."""
+    tools = []
+    if search_model is not None:
+        search_agent = build_search_agent(search_model, summary_model)
+        tools.append(
+            build_agent_tool(
+                search_agent,
+                "search_agent",
+                "Searches the web for recent or real-time facts and returns an answer with "
+                "source URLs. The task must be self-contained.",
+            )
+        )
+    supervisor = create_agent(
+        model=main_model,
+        tools=tools,
+        middleware=[
+            dated_prompt(SUPERVISOR_PROMPT),
+            ToolCallLimitMiddleware(run_limit=SUPERVISOR_CALL_LIMIT),
+            build_summarization(summary_model),
+        ],
+    )
+
+    graph = StateGraph(ChatState)
+    graph.add_node("supervisor", build_agent_node(supervisor, track_route=True))
+    graph.add_edge(START, "supervisor")
+    graph.add_edge("supervisor", END)
+    return graph
+
+
+GRAPH_BUILDERS = {
+    "router": build_router_graph,
+    "single": build_single_graph,
+    "supervisor": build_supervisor_graph,
+}
+
+
+def build_agent(checkpointer):
+    """AGENT_PATTERN 에 맞는 그래프를 체크포인터와 함께 만든다. lifespan 에서 한 번만 호출한다."""
+    # 기본 상태에서는 main과 summary 모두 OpenAI 호환 모델을 쓴다.
+    # 실패 시에는 Anthropic → Gemini 순서로 자동 전환한다.
+    main_model = build_model(settings.main_model_provider)
+    summary_model = build_model(settings.summary_model_provider)
+    # 노드별 공급자를 비우면 main 과 같은 공급자를 쓴다. 검색 키가 없으면 검색을 뺀다.
+    search_model = (
+        build_model(settings.search_model_provider or settings.main_model_provider)
+        if settings.tavily_api_key
+        else None
+    )
+
+    graph = GRAPH_BUILDERS[settings.agent_pattern](main_model, summary_model, search_model)
     return graph.compile(checkpointer=checkpointer, name="chat_graph")

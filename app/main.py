@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
     # 어떤 공급자·모델로 떴는지 남긴다. 배포 후 로그만 보고 설정을 확인할 수 있다.
     log_event(
         "startup_complete",
+        agent_pattern=settings.agent_pattern,
         main_model=settings.model_label(settings.main_model_provider),
         summary_model=settings.model_label(settings.summary_model_provider),
         router_model=settings.model_label(
