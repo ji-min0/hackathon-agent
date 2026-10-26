@@ -12,19 +12,29 @@
 자세한 내용은 docs/API_SPEC.md 5장 참고.
 """
 
+import logging
 from typing import Literal
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+)
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from pydantic import BaseModel, Field
 
-from app.chat.prompts import SUMMARY_PROMPT, SYSTEM_PROMPT
+from app.chat.prompts import RAG_DOCUMENTS, ROUTER_PROMPT, SUMMARY_PROMPT, SYSTEM_PROMPT
 from app.core.config import settings
+from app.core.logging import log_event
 
 
 def build_openai_model() -> ChatOpenAI:
@@ -114,13 +124,61 @@ class ChatState(MessagesState):
     route: Route
 
 
-def classify(state: ChatState) -> dict:
-    """질문 의도를 분류해 route 를 정한다.
+class RouteDecision(BaseModel):
+    """분류기 출력 스키마. 모델이 쓴 JSON 을 이 형식으로 검증한다."""
 
-    TODO(2단계): structured output 분류기로 교체한다. 지금은 그래프 연결 확인용으로
-    항상 general 을 돌려준다.
+    route: Route = Field(description="The agent that should answer the latest message.")
+    reason: str = Field(description="One short sentence explaining the choice.")
+
+
+# 분류기에 보여 줄 최근 메시지 수. 지시어("그거", "더 자세히")를 풀 정도면 충분하다.
+ROUTER_HISTORY_MESSAGES = 6
+
+
+def build_router(provider: str):
+    """RouteDecision 을 돌려주는 분류기를 만든다.
+
+    with_structured_output 은 쓰지 않는다. Codyssey 게이트웨이의 OpenAI 경로가
+    response_format 과 tool_choice 강제를 400(unsupported_feature)으로 거부하기 때문이다.
+    대신 프롬프트로 JSON 만 쓰게 하고 Pydantic 파서로 검증한다. 공급자와 상관없이
+    동작하므로 vLLM 으로 바꿔도 그대로 쓴다.
     """
-    return {"route": "general"}
+    return build_model(provider) | PydanticOutputParser(pydantic_object=RouteDecision)
+
+
+def router_input(messages: list[AnyMessage]) -> list:
+    """분류기 입력을 만든다. 최근 대화를 텍스트 대본으로 바꿔 넘긴다.
+
+    메시지 객체를 그대로 넘기면 tool call 과 tool 결과가 잘려 짝이 깨질 수 있고,
+    게이트웨이가 거부하는 name 필드도 따라간다. 분류에는 텍스트만 있으면 된다.
+    """
+    recent = [m for m in messages if isinstance(m, HumanMessage | AIMessage) and m.text]
+    *history, latest = recent[-ROUTER_HISTORY_MESSAGES:]
+    lines = [f"{'user' if isinstance(m, HumanMessage) else 'assistant'}: {m.text}" for m in history]
+    transcript = "\n".join(lines) or "(no earlier turns)"
+    return [
+        SystemMessage(ROUTER_PROMPT.format(rag_documents=RAG_DOCUMENTS)),
+        HumanMessage(
+            f"<conversation>\n{transcript}\n</conversation>\n\n"
+            f"<latest_message>\n{latest.text}\n</latest_message>"
+        ),
+    ]
+
+
+def build_classify(router):
+    """분류기 노드를 만든다. 분류가 실패해도 대화는 general 로 이어 간다."""
+
+    async def classify(state: ChatState) -> dict:
+        try:
+            decision = await router.ainvoke(router_input(state["messages"]))
+        except Exception as exc:
+            log_event("route_failed", level=logging.WARNING, error=type(exc).__name__)
+            return {"route": "general"}
+
+        log_event("route_selected", route=decision.route, reason=decision.reason)
+        return {"route": decision.route}
+
+    return classify
 
 
 def select_agent(state: ChatState) -> Route:
@@ -179,6 +237,8 @@ def build_agent(checkpointer):
     main_model = build_model(settings.main_model_provider)
     summary_model = build_model(settings.summary_model_provider)
     general_agent = build_general_agent(main_model, summary_model)
+    # TODO(2단계): ROUTER_MODEL 등 노드별 모델을 env 로 따로 지정한다.
+    router = build_router(settings.main_model_provider)
 
     async def general(state: ChatState) -> dict:
         messages = strip_message_names(state["messages"])
@@ -186,12 +246,17 @@ def build_agent(checkpointer):
         return {"messages": replace_messages(result["messages"])}
 
     graph = StateGraph(ChatState)
-    graph.add_node("classify", classify)
+    graph.add_node("classify", build_classify(router))
     graph.add_node("general", general)
 
     graph.add_edge(START, "classify")
-    # TODO(2단계): search, rag 노드를 만들면 여기에 경로를 추가한다.
-    graph.add_conditional_edges("classify", select_agent, {"general": "general"})
+    # TODO(2단계): search, rag 노드를 만들면 각 노드로 연결한다. 그 전까지는 general 이
+    # 답하되, 분류 결과(route)는 State 에 그대로 남긴다.
+    graph.add_conditional_edges(
+        "classify",
+        select_agent,
+        {"general": "general", "search": "general", "rag": "general"},
+    )
     graph.add_edge("general", END)
 
     return graph.compile(checkpointer=checkpointer, name="chat_graph")

@@ -3,8 +3,10 @@
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.chat import agent
@@ -14,7 +16,18 @@ def fake_model(*answers: str) -> GenericFakeChatModel:
     return GenericFakeChatModel(messages=iter(AIMessage(content=a) for a in answers))
 
 
-def build_test_graph(monkeypatch, main_model, summary_model, **overrides):
+def fake_router(route: str = "general") -> RunnableLambda:
+    return RunnableLambda(lambda _: agent.RouteDecision(route=route, reason="test"))
+
+
+def failing_router() -> RunnableLambda:
+    def fail(_):
+        raise RuntimeError("router down")
+
+    return RunnableLambda(fail)
+
+
+def build_test_graph(monkeypatch, main_model, summary_model, router=None, **overrides):
     values = {
         "main_model_provider": "main",
         "summary_model_provider": "summary",
@@ -25,6 +38,7 @@ def build_test_graph(monkeypatch, main_model, summary_model, **overrides):
     monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
     models = {"main": main_model, "summary": summary_model}
     monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
+    monkeypatch.setattr(agent, "build_router", lambda provider: router or fake_router())
     return agent.build_agent(InMemorySaver())
 
 
@@ -94,3 +108,68 @@ async def test_message_names_are_removed_before_model_call(monkeypatch) -> None:
     result = await graph.ainvoke({"messages": [{"role": "user", "content": "질문2"}]}, config)
 
     assert [m.name for m in result["messages"]] == [None, None, None, None]
+
+
+@pytest.mark.asyncio
+async def test_route_from_classifier_is_recorded(monkeypatch) -> None:
+    # search 노드가 생기기 전까지는 general 이 답하지만, 분류 결과는 State 에 남는다.
+    graph = build_test_graph(monkeypatch, fake_model("답"), fake_model(), fake_router("search"))
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "오늘 날씨"}]}, thread_config("r")
+    )
+
+    assert result["route"] == "search"
+    assert result["messages"][-1].content == "답"
+
+
+@pytest.mark.asyncio
+async def test_classifier_failure_falls_back_to_general(monkeypatch) -> None:
+    graph = build_test_graph(monkeypatch, fake_model("답"), fake_model(), failing_router())
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "안녕"}]}, thread_config("f")
+    )
+
+    assert result["route"] == "general"
+    assert result["messages"][-1].content == "답"
+
+
+def test_router_input_is_text_transcript_without_tool_messages() -> None:
+    messages = [
+        HumanMessage(content="환율 알려줘"),
+        AIMessage(content="", tool_calls=[{"name": "search", "args": {}, "id": "c1"}]),
+        ToolMessage(content="검색 결과", tool_call_id="c1"),
+        AIMessage(content="1달러는 1400원입니다.", name="main_agent"),
+        HumanMessage(content="그럼 엔화는?"),
+    ]
+
+    system, user = agent.router_input(messages)
+
+    assert "No documents are registered yet." in system.content
+    assert "user: 환율 알려줘\nassistant: 1달러는 1400원입니다." in user.content
+    assert "<latest_message>\n그럼 엔화는?\n</latest_message>" in user.content
+    assert "검색 결과" not in user.content
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"route": "search", "reason": "weather changes daily"}',
+        '```json\n{"route": "search", "reason": "weather changes daily"}\n```',
+    ],
+)
+def test_router_parses_json_answer(monkeypatch, text: str) -> None:
+    monkeypatch.setattr(agent, "build_model", lambda provider: fake_model(text))
+
+    decision = agent.build_router("openai").invoke("오늘 날씨")
+
+    assert decision == agent.RouteDecision(route="search", reason="weather changes daily")
+
+
+def test_router_rejects_unknown_route(monkeypatch) -> None:
+    text = '{"route": "weather", "reason": "x"}'
+    monkeypatch.setattr(agent, "build_model", lambda provider: fake_model(text))
+
+    with pytest.raises(OutputParserException):
+        agent.build_router("openai").invoke("오늘 날씨")
