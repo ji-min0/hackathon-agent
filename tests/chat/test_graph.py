@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.chat import agent
@@ -81,3 +81,16 @@ async def test_summarized_history_is_saved_to_parent_state(monkeypatch) -> None:
     assert "질문1" not in contents
     assert any("요약본" in c for c in contents)
     assert contents[-1] == "두 번째 답변"
+
+
+@pytest.mark.asyncio
+async def test_message_names_are_removed_before_model_call(monkeypatch) -> None:
+    # 게이트웨이는 메시지 name 필드를 거부한다. 예전 에이전트가 저장한 name 도 지워야 한다.
+    graph = build_test_graph(monkeypatch, fake_model("답2"), fake_model())
+    config = thread_config("n")
+    old_history = [HumanMessage(content="질문1"), AIMessage(content="답1", name="main_agent")]
+    await graph.aupdate_state(config, {"messages": old_history})
+
+    result = await graph.ainvoke({"messages": [{"role": "user", "content": "질문2"}]}, config)
+
+    assert [m.name for m in result["messages"]] == [None, None, None, None]

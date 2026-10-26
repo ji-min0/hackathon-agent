@@ -17,7 +17,7 @@ from typing import Literal
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AnyMessage, RemoveMessage
+from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -138,6 +138,18 @@ def replace_messages(messages: list[AnyMessage]) -> list:
     return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]
 
 
+def strip_message_names(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """AIMessage 의 name 필드를 지운다.
+
+    Codyssey 게이트웨이는 메시지의 name 필드를 400(unsupported_feature)으로 거부한다.
+    예전 에이전트(name="main_agent")가 저장한 대화에도 남아 있어서 호출 전에 지운다.
+    """
+    return [
+        m.model_copy(update={"name": None}) if isinstance(m, AIMessage) and m.name else m
+        for m in messages
+    ]
+
+
 def build_general_agent(main_model, summary_model):
     """툴 없이 답하는 일반 질문 에이전트."""
     middleware = [
@@ -151,12 +163,12 @@ def build_general_agent(main_model, summary_model):
         )
     ]
     # 체크포인터는 부모 그래프만 가진다. 대화 기록은 부모 State 에 저장된다.
+    # name 을 주면 답변 메시지에 name 이 붙어 게이트웨이가 거부하므로 주지 않는다.
     return create_agent(
         model=main_model,
         tools=[],
         system_prompt=SYSTEM_PROMPT,
         middleware=middleware,
-        name="general_agent",
     )
 
 
@@ -169,7 +181,8 @@ def build_agent(checkpointer):
     general_agent = build_general_agent(main_model, summary_model)
 
     async def general(state: ChatState) -> dict:
-        result = await general_agent.ainvoke({"messages": state["messages"]})
+        messages = strip_message_names(state["messages"])
+        result = await general_agent.ainvoke({"messages": messages})
         return {"messages": replace_messages(result["messages"])}
 
     graph = StateGraph(ChatState)
