@@ -1,6 +1,6 @@
 # AI 챗봇 서비스
 
-**배포 주소 — https://52.78.121.248** (AWS EC2) · 배포 방법은 [`docs/deploy.md`](docs/deploy.md)
+**배포 주소 — https://43.203.94.29** (AWS EC2) · 배포 방법은 [`docs/deploy.md`](docs/deploy.md)
 
 로그인한 사용자가 웹에서 질문하면 AI 가 답하고, 모든 대화가 DB 에 누적되는 서비스다.
 대화별로 문맥이 이어지며, 지난 대화를 언제든 다시 열어볼 수 있다.
@@ -433,19 +433,11 @@ curl -s "$BASE/api/threads/<thread_id>/messages" -b "access_token=$TOKEN"
 
 ## 배포
 
-AWS EC2 또는 NCP 서버 한 대에 Docker Compose 로 띄운다. 앞단의 Caddy(웹 서버)가 HTTPS 인증서를
-자동으로 발급·갱신하고(도메인 없이 공인 IP 로도 가능), DB 는 Supabase 를 그대로 쓴다.
-클라우드를 바꿔도 서버 안의 절차는 같다.
+AWS 에는 CloudFormation 스택 하나(`deploy/aws/ec2-oidc-cfn.yml`)로 EC2·탄력적 IP·방화벽·CD 권한을
+만들고, main 에 push 하면 GitHub Actions 가 OIDC + SSM 으로 자동 배포한다(SSH·저장된 키 없음).
+서버 안에서는 Docker Compose 로 앱과 Caddy(HTTPS 자동 인증서)를 띄우고, DB 는 Supabase 를 쓴다.
 
-```bash
-# 서버에서 (처음 한 번)
-git clone https://github.com/ji-min0/hackathon-agent.git && cd hackathon-agent
-bash scripts/server-setup.sh          # Docker 설치, 메모리가 작으면 스왑 생성
-# 로컬에서 .env 를 서버로 복사한 뒤
-printf "DOMAIN=<공인 IP>\nACME_PROFILE=shortlived\n" >> .env && make deploy
-```
-
-서버 만들기(AWS·NCP 콘솔), 업데이트, AWS → NCP 이전, 문제 해결은 [`docs/deploy.md`](docs/deploy.md) 참고.
+스택 만들기, `.env` 올리기, 다른 레포 배포, NCP 로 옮기기는 [`docs/deploy.md`](docs/deploy.md) 참고.
 
 ### 유휴 정지 주의
 

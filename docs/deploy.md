@@ -1,174 +1,159 @@
-# 배포 (AWS EC2 / NCP 공통)
+# 배포
 
-앱은 Docker 이미지 하나로 돈다. 서버 앞에는 Caddy 가 HTTPS 를 붙인다.
-DB 는 Supabase 를 그대로 쓰므로 서버를 옮겨도 데이터 이전이 없다.
+앱은 Docker 이미지 하나로 돈다. 서버 앞에는 Caddy(웹 서버)가 HTTPS 를 붙인다.
+DB 는 Supabase 를 그대로 쓰므로 서버를 바꿔도 데이터 이전이 없다.
 
 ```
 브라우저 ─HTTPS→ Caddy(80·443, 인증서 자동 발급) ─HTTP→ app(uvicorn 8000) ─→ Supabase
 ```
 
-클라우드마다 다른 것은 **1. 서버 만들기**뿐이다. 2번부터는 AWS·NCP 가 똑같다.
+- **AWS(현재)**: CloudFormation 스택 하나로 서버·IP·방화벽·CD 권한을 만들고, main 에 push 하면
+  GitHub Actions 가 자동 배포한다.
+- **NCP**: 서버를 손으로 만들고 같은 Docker Compose 로 띄운다(아래 "NCP 로 옮기기").
 
-## 1. 서버 만들기
+## 현재 배포
 
-공통 조건: Ubuntu 22.04 또는 24.04, 공인 IP, 인바운드 포트 22(SSH)·80·443 열기.
+| 항목 | 값 |
+|---|---|
+| 주소 | https://43.203.94.29 (관리자: `/admin`) — Let's Encrypt IP 인증서 |
+| 스택 | CloudFormation `hackathon-agent` (서울), 템플릿 `deploy/aws/ec2-oidc-cfn.yml` |
+| 서버 | m7i-flex.large(2vCPU/8GB, 무료 티어 대상), Ubuntu 24.04, 30GB |
+| SSH | `ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@43.203.94.29` (22번은 등록한 IP 만) |
+| CD 권한 | IAM 역할 `hackathon-agent-github-deploy`(GitHub OIDC, main 브랜치만) |
 
-| | AWS | NCP |
-|---|---|---|
-| 서버 | EC2 → 인스턴스 시작 | Server → 서버 생성. `s2-g3`(2vCPU/8GB) |
-| 포트 | 보안 그룹 인바운드 규칙: 22(내 IP), 80·443(0.0.0.0/0) | ACG 규칙: 22(내 IP), 80·443(0.0.0.0/0) |
-| 공인 IP | 탄력적 IP 할당 후 연결(재시작해도 IP 유지) | 공인 IP 신청 후 서버에 연결 |
-| 접속 | `ssh -i 키.pem ubuntu@<IP>` | `ssh root@<IP>` (관리자 비밀번호는 콘솔에서 확인) |
-| 사양 | 무료 티어 대상 중 m7i-flex.large(2vCPU/8GB)가 NCP s2-g3 와 같다 | |
+## AWS: 처음부터 만들기
 
-메모리 1GB 서버는 `server-setup.sh` 가 스왑 2GB 를 만들어 빌드가 버티게 한다.
+### 1. 스택 만들기 (콘솔)
 
-## 2. 서버 준비 (한 번만)
+CloudFormation → 스택 생성 → 템플릿 파일 업로드 → `deploy/aws/ec2-oidc-cfn.yml`
 
-```bash
-git clone https://github.com/ji-min0/hackathon-agent.git
-cd hackathon-agent
-bash scripts/server-setup.sh
-exit   # docker 그룹 반영을 위해 다시 접속한다
-```
+| 파라미터 | 값 |
+|---|---|
+| `AppName` | `hackathon-agent` (서버 폴더·태그·역할 이름에 쓰인다) |
+| `SSHAllowedCidr` | 내 IP + `/32` (예: `121.135.181.35/32`) |
+| `CreateOIDCProvider` | `true`. 계정에 GitHub OIDC 공급자가 이미 있으면 `false` |
+| 나머지 | 기본값 |
 
-## 3. 환경 변수 올리기
+마지막 화면에서 "사용자 지정 이름으로 IAM 리소스를 생성할 수 있음"을 체크하고 제출한다.
+스택이 만드는 것:
 
-`.env` 는 저장소에 없다. 로컬에서 서버로 복사한다.
+- EC2 + 탄력적 IP + 보안 그룹(22: 내 IP, 80·443: 전체)
+- 첫 부팅 때 Docker·make 설치, 레포를 `/home/ubuntu/<AppName>` 으로 clone
+  (끝나면 `~/<AppName>.bootstrap-done` 이 생긴다. 로그: `/var/log/cloud-init-output.log`)
+- EC2 용 SSM 역할 `<AppName>-ec2`, GitHub Actions 용 역할 `<AppName>-github-deploy`, OIDC 공급자
 
-```bash
-# 로컬에서
-scp -i 키.pem .env ubuntu@<IP>:~/hackathon-agent/.env
-ssh -i 키.pem ubuntu@<IP> chmod 600 hackathon-agent/.env
-```
+출력 탭에서 `PublicIp`, `DeployRoleArn` 을 확인한다.
 
-`COOKIE_SECURE` 는 compose 가 `true` 로 덮어쓰므로 `.env` 에서 바꿀 필요 없다.
-`docker compose` 는 값 뒤의 주석(`KEY=40 # 설명`)을 지워서 읽지만, `docker run --env-file` 은 주석까지
-값으로 읽는다. 주석은 값과 다른 줄에 두는 것이 안전하다.
-
-## 4. 실행
-
-서버 `.env` 끝에 접속 주소를 넣는다. `docker compose` 가 같은 폴더의 `.env` 를 읽어 Caddy 에 넘긴다
-(앱은 모르는 키를 무시한다).
+### 2. GitHub Secret
 
 ```bash
-cd ~/hackathon-agent
-printf "DOMAIN=52.78.121.248\nACME_PROFILE=shortlived\n" >> .env   # 공인 IP 로 접속할 때
-make deploy                                # = docker compose up -d --build
-docker compose ps                          # app 이 healthy 가 되면 준비 완료(30초 정도)
-curl -s https://52.78.121.248/health       # {"status":"ok"}
+gh secret set AWS_ROLE_ARN -b <출력의 DeployRoleArn>
 ```
 
-주소 방식은 셋 중 하나를 고른다. 바꿀 때는 `.env` 를 고치고 `docker compose up -d` 한다.
+### 3. 서버에 `.env` 올리기
 
-| 방식 | `.env` | 비고 |
-|---|---|---|
-| **공인 IP (현재)** | `DOMAIN=52.78.121.248`, `ACME_PROFILE=shortlived` | Let's Encrypt IP 인증서(2026-01 정식). 6일짜리라 Caddy 가 이틀쯤마다 자동 갱신. 서버가 6일 넘게 꺼져 있으면 만료되지만 다시 켜면 곧 새로 받는다 |
-| 도메인 | `DOMAIN=chat.example.com` | DNS A 레코드를 서버 IP 로. 90일 인증서. 발표·심사용으로 가장 안정적 |
-| sslip.io | `DOMAIN=52-78-121-248.sslip.io` | 도메인 없이 이름이 필요할 때. 외부 무료 DNS(sslip.io)에 의존 |
-
-## 5. 업데이트·운영
+`.env` 는 저장소에 없으므로 로컬에서 복사하고, 접속 주소 두 줄을 붙인다.
 
 ```bash
-git pull && docker compose up -d --build   # 새 코드 반영
-docker compose logs -f app                 # 서버 로그(route_selected, ai_call_success 등)
-docker compose restart app                 # .env 를 고쳤을 때
+scp -i ~/.ssh/hackathon-agent-key.pem .env ubuntu@<IP>:hackathon-agent/.env
+ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@<IP> \
+  "chmod 600 hackathon-agent/.env && printf 'DOMAIN=<IP>\nACME_PROFILE=shortlived\n' >> hackathon-agent/.env"
 ```
 
-- RAG 문서는 로컬에서 `scripts/ingest.py` 로 넣는다(같은 Supabase 를 쓴다). 넣은 뒤 관리자 화면의
-  "문서·프롬프트 다시 읽기"를 누르면 서버 재시작 없이 반영된다.
-- 워커는 1개다. 같은 대화방 동시 실행 가드가 프로세스 안에서만 동작하기 때문이다.
+- `docker compose` 는 같은 폴더의 `.env` 에서 `DOMAIN`·`ACME_PROFILE` 을 읽어 Caddy 에 넘긴다
+  (앱은 모르는 키를 무시한다). `COOKIE_SECURE` 는 compose 가 `true` 로 덮어쓴다.
+- `docker compose` 는 값 뒤 주석(`KEY=40 # 설명`)을 지워서 읽지만 `docker run --env-file` 은
+  주석까지 값으로 읽는다. 주석은 값과 다른 줄에 둔다.
+
+### 4. 배포
+
+main 에 push 하면 CD 가 배포한다. 손으로 하려면 Actions → CI/CD → Run workflow, 또는 서버에서
+`cd ~/hackathon-agent && make deploy`.
+
+### 지우기
+
+CloudFormation 에서 스택을 삭제하면 서버·IP·역할·OIDC 공급자가 모두 지워진다.
 
 ## CI/CD (GitHub Actions)
 
 `.github/workflows/ci-cd.yml`
 
-- **CI**: 모든 push·PR 에서 `make check`(ruff 린트·포맷, pytest)를 돌린다. 배포는 하지 않는다.
-- **CD**: main 에 push 되고 CI 가 통과하면 EC2 에 배포한다. **SSH 를 쓰지 않는다.**
+- **CI**: 모든 push·PR 에서 `make check`(ruff 린트·포맷, pytest). 배포는 하지 않는다.
+- **CD**: main push + CI 통과 시 배포한다. **SSH 를 쓰지 않는다.**
 
 ```
-GitHub Actions ──OIDC(임시 권한)──▶ IAM 역할 github-actions-deploy
+GitHub Actions ──OIDC(임시 권한)──▶ IAM 역할 <AppName>-github-deploy
                ──SSM Run Command──▶ EC2 안의 SSM 에이전트
                                      └ git reset --hard origin/main → docker compose up -d --build --wait
                ──https://<IP>/health 확인
 ```
 
-- GitHub 에 저장된 AWS 키·SSH 키가 없다. OIDC 는 이 레포의 main 브랜치 작업에만 몇 분짜리 권한을 준다.
-- 22번 포트를 열 필요가 없다(사람이 접속할 IP 만 허용).
-- 배포 대상은 `Name=hackathon-agent` 태그로 찾고, 공인 IP 도 거기서 읽는다.
+- GitHub 에 저장된 AWS 키·SSH 키가 없다. OIDC 는 이 레포의 main 브랜치 작업에만 1시간짜리 권한을 준다.
+- 배포 역할은 이 스택의 인스턴스에만 명령을 보낼 수 있다.
+- 배포 대상은 `Name=<APP_NAME>` 태그로 찾고 공인 IP 도 거기서 읽는다.
+- OIDC 신뢰 조건은 `sub = repo:<owner>/<repo>:ref:refs/heads/main` 이다. 워크플로 job 에
+  `environment:` 를 넣으면 `sub` 가 `...:environment:<이름>` 으로 바뀌어 거절된다.
 
-### 처음 한 번 설정 (루트 또는 관리자로 IAM 콘솔)
+## 다른 레포 배포하기
 
-1. **자격 증명 공급자 추가**: OpenID Connect, URL `https://token.actions.githubusercontent.com`,
-   대상 `sts.amazonaws.com`.
-2. **역할 `github-actions-deploy`**: 웹 자격 증명 → 위 공급자 → 조직 `ji-min0`, 레포 `hackathon-agent`,
-   브랜치 `main`. 인라인 정책:
+같은 템플릿으로 앱마다 스택을 하나씩 만든다.
 
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       { "Effect": "Allow", "Action": "ec2:DescribeInstances", "Resource": "*" },
-       { "Effect": "Allow", "Action": "ssm:SendCommand",
-         "Resource": "arn:aws:ssm:ap-northeast-2::document/AWS-RunShellScript" },
-       { "Effect": "Allow", "Action": "ssm:SendCommand",
-         "Resource": "arn:aws:ec2:ap-northeast-2:*:instance/*",
-         "Condition": { "StringEquals": { "aws:ResourceTag/Name": "hackathon-agent" } } },
-       { "Effect": "Allow", "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
-         "Resource": "*" }
-     ]
-   }
-   ```
+1. 스택 파라미터: `AppName`(예: `other-app`), `GitHubRepo`(예: `ji-min0/other-app`),
+   `CreateOIDCProvider=false`(공급자는 계정에 하나뿐).
+2. 그 레포의 워크플로 `env.APP_NAME` 을 `AppName` 과 같게, Secret `AWS_ROLE_ARN` 을 출력의
+   `DeployRoleArn` 으로 둔다.
+3. 그 레포에 `Dockerfile`, `docker-compose.yml`(app + Caddy), `deploy/Caddyfile`, `/health` 가 있어야 한다.
 
-   신뢰 정책의 `sub` 조건은 `repo:ji-min0/hackathon-agent:ref:refs/heads/main` 이어야 한다.
-   워크플로 job 에 `environment:` 를 넣으면 `sub` 가 `...:environment:<이름>` 으로 바뀌어 거절된다.
-3. **역할 `hackathon-agent-ec2`**: AWS 서비스 → EC2 → 정책 `AmazonSSMManagedInstanceCore`.
-   EC2 → 인스턴스 → 작업 → 보안 → IAM 역할 수정으로 연결한다. Ubuntu AMI 에는 SSM 에이전트가
-   기본 설치되어 있어 몇 분 안에 등록된다(늦으면 `sudo snap restart amazon-ssm-agent`).
-4. **GitHub Secret**: `gh secret set AWS_ROLE_ARN -b arn:aws:iam::<계정ID>:role/github-actions-deploy`
-
-### NCP 로 옮기면
-
-이 CD 는 AWS 전용이다(OIDC·SSM). NCP 에서는 SSH 로 배포하는 방식으로 바꿔야 한다
-(git 이력의 `802de0d` 커밋에 SSH 방식 워크플로가 있다).
-
-## AWS → NCP 로 옮기기
-
-1. NCP 에서 **1. 서버 만들기**를 한다.
-2. 2~4번을 그대로 한다. `.env` 의 `DOMAIN` 만 새 IP 로 바꾼다(새 IP 로 인증서를 자동으로 다시 받는다).
-3. 확인되면 아래 명령으로 AWS 리소스를 정리한다. 탄력적 IP 는 남겨 두면 계속 과금된다.
+## 운영
 
 ```bash
-export AWS_REGION=ap-northeast-2
-IID=$(aws ec2 describe-instances --filters Name=tag:Name,Values=hackathon-agent \
-  Name=instance-state-name,Values=running,stopped --query "Reservations[].Instances[].InstanceId" --output text)
-ALLOC=$(aws ec2 describe-addresses --filters Name=tag:Name,Values=hackathon-agent --query "Addresses[0].AllocationId" --output text)
-aws ec2 disassociate-address --association-id $(aws ec2 describe-addresses --allocation-ids $ALLOC --query "Addresses[0].AssociationId" --output text)
-aws ec2 release-address --allocation-id $ALLOC
-aws ec2 terminate-instances --instance-ids $IID && aws ec2 wait instance-terminated --instance-ids $IID
-aws ec2 delete-security-group --group-name hackathon-agent-sg
-aws ec2 delete-key-pair --key-name hackathon-agent-key && rm ~/.ssh/hackathon-agent-key.pem
+docker compose ps                     # app 이 healthy 인지
+docker compose logs -f app            # 서버 로그(route_selected, ai_call_success 등)
+docker compose restart app            # .env 를 고쳤을 때
 ```
 
-### 현재 AWS 배포 (2026-10-26)
+- RAG 문서는 로컬에서 `scripts/ingest.py` 로 넣는다(같은 Supabase). 넣은 뒤 관리자 화면의
+  "문서·프롬프트 다시 읽기"를 누르면 서버 재시작 없이 반영된다.
+- 워커는 1개다. 같은 대화방 동시 실행 가드가 프로세스 안에서만 동작하기 때문이다.
 
-| 항목 | 값 |
-|---|---|
-| 주소 | https://52.78.121.248 (관리자: `/admin`) — Let's Encrypt IP 인증서(shortlived) |
-| 인스턴스 | `hackathon-agent`, m7i-flex.large(2vCPU/8GB, 무료 티어 대상), Ubuntu 24.04, 30GB gp3, 서울 |
-| 접속 | `ssh -i ~/.ssh/hackathon-agent-key.pem ubuntu@52.78.121.248` (22번은 등록한 IP 만 허용) |
-| CLI 권한 | IAM 사용자 `hackathon-deployer`(서울 EC2 작업만 허용 + `aws login`용 권한) |
-| CD 권한 | IAM 역할 `github-actions-deploy`(OIDC, main 브랜치만), 인스턴스 역할 `hackthon-agent-ec2`(SSM, 이름에 a 하나 빠짐) |
+### 주소 방식
 
-팀원이 같은 NCP 안에 vLLM 을 띄우면 `.env` 의 `OPENAI_BASE_URL` 을 GPU 서버 **사설 IP** 주소
-(예: `http://10.0.1.5:8000/v1`)로 바꾸고 `docker compose restart app` 한다.
+`.env` 의 `DOMAIN`·`ACME_PROFILE` 을 고치고 `docker compose up -d` 한다.
+
+| 방식 | `.env` | 비고 |
+|---|---|---|
+| **공인 IP (현재)** | `DOMAIN=<IP>`, `ACME_PROFILE=shortlived` | Let's Encrypt IP 인증서(2026-01 정식). 6일짜리라 Caddy 가 이틀쯤마다 자동 갱신. 서버가 6일 넘게 꺼져 있으면 만료되지만 다시 켜면 곧 새로 받는다 |
+| 도메인 | `DOMAIN=chat.example.com` | DNS A 레코드를 서버 IP 로. 90일 인증서. 발표·심사용으로 가장 안정적 |
+| sslip.io | `DOMAIN=<IP 의 . 을 - 로>.sslip.io` | 도메인 없이 이름이 필요할 때. 외부 무료 DNS 에 의존 |
+
+IP 로 접속하면 브라우저가 SNI 를 보내지 않으므로 `deploy/Caddyfile` 의 `default_sni` 가 필요하다.
+
+## NCP 로 옮기기
+
+NCP 에는 CloudFormation·SSM 이 없으므로 서버를 손으로 만들고, CD 는 SSH 방식으로 바꾼다.
+
+1. Server → 서버 생성: Ubuntu 24.04, `s2-g3`(2vCPU/8GB), 공인 IP 연결, ACG 에서 22(내 IP)·80·443 허용.
+2. 서버에서:
+
+   ```bash
+   git clone https://github.com/ji-min0/hackathon-agent.git && cd hackathon-agent
+   bash scripts/server-setup.sh   # Docker·make 설치, 메모리가 작으면 스왑
+   ```
+
+3. 위 "3. 서버에 `.env` 올리기"를 새 IP 로 하고 `make deploy`.
+4. CD: git 이력의 `802de0d` 커밋에 SSH 방식 워크플로가 있다(배포 키를 서버 `authorized_keys` 에
+   등록하고 `DEPLOY_*` Secrets 를 넣는 방식). 22번을 전체 허용해야 한다.
+5. 팀원이 같은 NCP 안에 vLLM 을 띄우면 `.env` 의 `OPENAI_BASE_URL` 을 GPU 서버 **사설 IP**
+   (예: `http://10.0.1.5:8000/v1`)로 바꾸고 `docker compose restart app`.
+6. 확인되면 AWS 스택을 삭제한다.
 
 ## 문제 해결
 
 | 증상 | 확인 |
 |---|---|
-| `https://` 접속이 안 됨 | 80·443 포트가 열려 있는지(Caddy 가 인증서를 받을 때 80 을 쓴다), `docker compose logs caddy` |
-| IP 접속 시 인증서 경고 | `.env` 에 `ACME_PROFILE=shortlived` 가 있는지. 없으면 IP 인증서를 받지 못한다 |
+| `https://` 접속이 안 됨 | 80·443 이 열려 있는지(인증서 발급에 80 을 쓴다), `docker compose logs caddy` |
+| IP 접속 시 인증서 경고 | `.env` 에 `ACME_PROFILE=shortlived` 가 있는지 |
 | 로그인 후 바로 로그아웃됨 | `http://` 로 접속했는지. Secure 쿠키라 HTTPS 에서만 유지된다 |
-| app 이 unhealthy | `docker compose logs app` 에서 `.env` 값(DATABASE_URL 등) 오류 확인 |
-| 빌드 중 멈춤·Killed | 메모리 부족. `free -h` 로 스왑이 있는지 확인하고 `server-setup.sh` 를 다시 실행 |
+| app 이 unhealthy | `docker compose logs app` 에서 `.env` 값 오류 확인 |
+| CD: `Not authorized to perform sts:AssumeRoleWithWebIdentity` | `AWS_ROLE_ARN` 이 출력의 `DeployRoleArn` 과 같은지, 워크플로 job 에 `environment:` 가 없는지 |
+| CD: SSM 명령이 `Undeliverable`·대기만 함 | EC2 에 `<AppName>-ec2` 역할이 붙었는지, 서버에서 `sudo snap restart amazon-ssm-agent` |

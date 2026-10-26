@@ -4,7 +4,8 @@
 # CD 는 SSH 를 쓰지 않는다.
 #   1) GitHub OIDC 로 IAM 역할(github-actions-deploy)의 임시 권한을 받는다. 저장된 AWS 키가 없다.
 #   2) AWS SSM Run Command 로 EC2 안의 SSM 에이전트에게 배포 명령을 보낸다. 22번 포트가 필요 없다.
-# 필요한 설정: GitHub Secret AWS_ROLE_ARN, EC2 에 SSM 용 인스턴스 역할(docs/deploy.md).
+# 필요한 설정: CFN 스택(deploy/aws/ec2-oidc-cfn.yml)과
+#   GitHub Secret AWS_ROLE_ARN = 스택 출력 DeployRoleArn (docs/deploy.md).
 
 name: CI/CD
 
@@ -15,8 +16,9 @@ on:
 
 env:
   AWS_REGION: ap-northeast-2
-  # 배포 대상 EC2 의 Name 태그. IAM 정책도 이 태그가 붙은 인스턴스에만 명령을 허용한다.
-  INSTANCE_NAME: hackathon-agent
+  # CFN 템플릿(deploy/aws/ec2-oidc-cfn.yml)의 AppName 과 같아야 한다.
+  # EC2 Name 태그이자 서버 폴더 이름(/home/ubuntu/<APP_NAME>)이다.
+  APP_NAME: hackathon-agent
 
 jobs:
   ci:
@@ -60,10 +62,10 @@ jobs:
         id: target
         run: |
           read -r IID IP < <(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=$INSTANCE_NAME" "Name=instance-state-name,Values=running" \
+            --filters "Name=tag:Name,Values=$APP_NAME" "Name=instance-state-name,Values=running" \
             --query "Reservations[0].Instances[0].[InstanceId,PublicIpAddress]" --output text)
           if [ -z "$IID" ] || [ "$IID" = "None" ]; then
-            echo "실행 중인 $INSTANCE_NAME 인스턴스가 없습니다"; exit 1
+            echo "실행 중인 $APP_NAME 인스턴스가 없습니다"; exit 1
           fi
           echo "instance=$IID" >> "$GITHUB_OUTPUT"
           echo "ip=$IP" >> "$GITHUB_OUTPUT"
@@ -74,9 +76,9 @@ jobs:
         run: |
           # SSM 은 root 로 실행하므로 ubuntu 계정으로 바꿔서 배포한다.
           # 서버에서 추적 파일을 고쳐도 GitHub 의 main 으로 맞춘다. .env 는 추적하지 않아 그대로 남는다.
-          SCRIPT='sudo -u ubuntu -H bash -c "set -euo pipefail; cd ~/hackathon-agent;
+          SCRIPT="sudo -u ubuntu -H bash -c 'set -euo pipefail; cd ~/$APP_NAME;
             git fetch -q origin main; git reset -q --hard origin/main; git log --oneline -1;
-            docker compose up -d --build --wait; docker image prune -f > /dev/null"'
+            docker compose up -d --build --wait; docker image prune -f > /dev/null'"
           jq -n --arg c "$SCRIPT" '{commands: [$c]}' > params.json
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.target.outputs.instance }}" \

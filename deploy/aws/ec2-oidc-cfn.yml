@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: App on EC2 - EC2 + Elastic IP + security group + GitHub OIDC CD roles (one stack per app)
+
+Parameters:
+  AppName:
+    Type: String
+    Default: hackathon-agent
+    AllowedPattern: ^[a-z0-9-]+$
+    Description: >-
+      Name used for the server folder (/home/ubuntu/<AppName>), the Name tag and IAM role names.
+      Use a different value per app to deploy several repos in one account
+  InstanceType:
+    Type: String
+    Default: m7i-flex.large
+    Description: Free-tier eligible. m7i-flex.large (2 vCPU / 8 GB) matches the NCP s2-g3 spec
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: hackathon-agent-key
+    Description: Existing key pair used for SSH
+  SSHAllowedCidr:
+    Type: String
+    Description: IP allowed to SSH (port 22). Your IP followed by /32, e.g. 121.135.181.35/32
+    AllowedPattern: ^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$
+  GitHubRepo:
+    Type: String
+    Default: ji-min0/hackathon-agent
+    Description: GitHub repo (owner/name) to clone on the server and to allow deploys from
+  Branch:
+    Type: String
+    Default: main
+    Description: Branch allowed to deploy
+  CreateOIDCProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: >-
+      Set false if the GitHub OIDC provider already exists in IAM (only one per account,
+      so the second app stack must use false)
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Latest Ubuntu 24.04 image (Canonical public SSM parameter)
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, "true"]
+
+Resources:
+  # Network
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AppName} web (80/443 public, 22 from one IP)
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref SSHAllowedCidr, Description: ssh }
+        # Port 80 is used by Caddy to obtain certificates and to redirect http to https.
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: http }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: https }
+      Tags:
+        - { Key: Name, Value: !Ref AppName }
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+      Tags:
+        - { Key: Name, Value: !Ref AppName }
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds:
+        - !GetAtt SecurityGroup.GroupId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs: { VolumeSize: 30, VolumeType: gp3, DeleteOnTermination: true }
+
+      Tags:
+        - { Key: Name, Value: !Ref AppName }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          apt-get update -qq
+          apt-get install -y -qq make git
+          curl -fsSL https://get.docker.com | sh
+          usermod -aG docker ubuntu
+          sudo -u ubuntu git clone -b ${Branch} https://github.com/${GitHubRepo}.git /home/ubuntu/${AppName}
+          echo "${AppName} bootstrap done" > /home/ubuntu/${AppName}.bootstrap-done
+
+  # EC2 -> Systems Manager (SSM) role
+  # Used by the SSM agent on the EC2 instance to receive deploy commands (SSM Run Command).
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-ec2
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${AppName}-ec2
+      Roles: [!Ref InstanceRole]
+
+  # GitHub Actions CD (OIDC)
+  # Lets AWS trust OIDC tokens issued by GitHub. Only one can exist per account.
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  # Short-lived role for GitHub Actions
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOIDCProvider
+                - !Ref GitHubOIDCProvider
+                - !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${Branch}
+      Policies:
+        - PolicyName: deploy-via-ssm
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: ec2:DescribeInstances, Resource: "*" }
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Instance}
+              - Effect: Allow
+                Action: [ssm:GetCommandInvocation, ssm:ListCommandInvocations]
+                Resource: "*"
+
+Outputs:
+  PublicIp:
+    Description: Server public IP. Put it in DOMAIN in the server .env
+    Value: !Ref ElasticIP
+  SiteUrl:
+    Value: !Sub https://${ElasticIP}
+  InstanceId:
+    Value: !Ref Instance
+  DeployRoleArn:
+    Description: Value for the GitHub secret AWS_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn
+  SSHCommand:
+    Value: !Sub ssh -i ~/.ssh/${KeyName}.pem ubuntu@${ElasticIP}
