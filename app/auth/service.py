@@ -113,7 +113,7 @@ async def verify_token(client: AsyncClient, token: str) -> AuthUser | None:
     """액세스 토큰을 검증한다. 유효하지 않으면 None 을 돌려준다.
 
     요청마다 Supabase 에 왕복이 생긴다. 단순하고 확실한 대신 지연이 붙는다.
-    문제가 되면 로컬 JWT 검증으로 바꾼다. docs/API_SPEC.md 8.2 참고.
+    문제가 되면 로컬 JWT 검증으로 바꾼다.
     """
     try:
         response = await client.auth.get_user(token)

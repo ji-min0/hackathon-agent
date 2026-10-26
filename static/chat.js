@@ -1,5 +1,4 @@
 // 채팅 화면 동작.
-// TODO(프론트 담당): 스레드 목록/전환 부분을 채운다. 메시지 전송 흐름은 완성되어 있다.
 
 let currentThreadId = null;
 
@@ -421,10 +420,7 @@ document.getElementById("logout").addEventListener("click", async () => {
   location.href = "/login";
 });
 
-// TODO(프론트 담당):
-//   - GET /api/threads 로 사이드바 목록 구성
-//   - 목록 클릭 시 GET /api/threads/{id}/messages 로 화면 복구
-//   - "+ 새 대화" 클릭 시 currentThreadId 를 비우고 화면 초기화
+// "+ 새 대화": 현재 대화방 선택을 풀고 화면을 비운다. 방은 첫 메시지를 보낼 때 만든다.
 document.getElementById("new-thread").addEventListener("click", () => {
   currentThreadId = null;
   $messages.innerHTML = "";

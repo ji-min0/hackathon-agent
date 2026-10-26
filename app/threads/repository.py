@@ -1,7 +1,5 @@
 """chat_threads 테이블 접근 계층.
 
-TODO(챗 담당): 전체 구현
-
 SQL 은 여기에만 둔다. 라우터와 서비스는 이 모듈을 통해서만 DB 에 닿는다.
 스키마는 scripts/schema.sql 참고.
 """

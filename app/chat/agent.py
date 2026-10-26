@@ -16,7 +16,6 @@ GUARDRAIL_ENABLED 이면 세 패턴 모두 맨 앞에 guardrail 노드가 붙는
     START → guardrail → (거절) END
                       → (통과) 패턴의 첫 노드
 
-자세한 내용은 docs/API_SPEC.md 5장 참고.
 """
 
 import logging

@@ -1,8 +1,6 @@
 """메시지 전송 파이프라인.
 
-TODO(챗 담당): 전체 구현
-
-처리 순서 (docs/API_SPEC.md 7.5)
+처리 순서
     1. thread 소유권 확인      threads.service.require_owned
     2. LangGraph 호출          현재 질문만 넘긴다. 과거 대화는 넘기지 않는다
     3. 응답 반환
