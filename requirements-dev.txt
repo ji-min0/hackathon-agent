@@ -1,5 +1,0 @@
--r requirements.txt
-
-# 테스트 전용 의존성
-pytest>=8.3
-pytest-asyncio>=0.24

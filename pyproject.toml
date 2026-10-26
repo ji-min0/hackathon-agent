@@ -1,0 +1,88 @@
+[project]
+name = "chatbot-api"
+version = "0.1.0"
+description = "FastAPI + LangGraph 멀티 에이전트 챗봇"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # 웹
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "pydantic-settings>=2.6",
+    # EmailStr 검증에 필요하다.
+    "pydantic[email]>=2.9",
+    # LangGraph / LLM
+    "langchain>=1.3,<2",
+    "langgraph>=1.0,<2",
+    "langgraph-checkpoint-postgres",
+    "langchain-openai>=1.0",
+    "langchain-anthropic>=1.0",
+    "langchain-google-genai>=4.0",
+    # Supabase
+    "psycopg[binary,pool]>=3.2",
+    "supabase>=2.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+]
+
+# 패키지로 배포하지 않는 앱이라 빌드 설정 없이 의존성만 관리한다.
+[tool.uv]
+package = false
+
+# ---------------------------------------------------------------------------
+# Ruff — 린트 + 포맷
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes (미사용 import·변수)
+    "I",        # import 정렬
+    "B",        # bugbear (흔한 버그 패턴)
+    "UP",       # 최신 문법으로 업그레이드
+    "SIM",      # 단순화 가능한 코드
+    "ASYNC",    # async 코드에서 블로킹 호출
+]
+ignore = [
+    "B008",     # FastAPI Depends() 기본값 패턴은 정상이다
+    "E501",     # 줄 길이는 포매터에 맡긴다
+    "SIM117",   # 중첩 with 사이에 주석을 두는 스타일을 허용한다
+]
+
+[tool.ruff.lint.per-file-ignores]
+# main.py 는 LANGGRAPH_STRICT_MSGPACK 설정 뒤에 import 해야 한다.
+"app/main.py" = ["E402"]
+# 스크립트는 sys.path 를 고친 뒤 import 한다.
+"scripts/*.py" = ["E402"]
+
+# ---------------------------------------------------------------------------
+# Pytest + Coverage
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

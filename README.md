@@ -40,12 +40,10 @@
 git clone https://github.com/codyssey-ai/chatbot-api.git
 cd chatbot-api
 
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+uv sync                            # .venv 생성 + 개발용 의존성까지 설치 (= make install)
 ```
 
-Python 3.11 이상이 필요하다.
+Python 3.12와 [uv](https://docs.astral.sh/uv/)가 필요하다. 자주 쓰는 명령은 `make help`로 본다.
 
 ### 2. 환경 변수 설정
 
