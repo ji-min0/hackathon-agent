@@ -5,6 +5,12 @@
 # IP 로 쓸 때는 ACME_PROFILE=shortlived 가 필요하다. Let's Encrypt 의 IP 인증서는 유효기간이
 # 약 6일(160시간)뿐이라 이 프로필로만 발급되고, Caddy 가 이틀쯤마다 자동으로 갱신한다.
 # 도메인이면 기본값(classic, 90일 인증서)을 쓴다.
+{
+	# IP 주소로 접속하면 브라우저가 SNI(어느 주소의 인증서를 원하는지)를 보내지 않는다.
+	# SNI 가 없는 연결에도 DOMAIN 의 인증서를 내주도록 기본값을 정한다.
+	default_sni {$DOMAIN}
+}
+
 {$DOMAIN} {
 	encode gzip
 
