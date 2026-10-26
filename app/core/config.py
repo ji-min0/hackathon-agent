@@ -47,12 +47,16 @@ class Settings(BaseSettings):
     # 하나가 모든 툴을 쓴다 / supervisor: 상위 에이전트가 담당들을 툴처럼 불러 결과를 합친다.
     agent_pattern: Literal["router", "single", "supervisor"] = "router"
 
+    # input 가드레일. 위험 요청·개인정보·프롬프트 공격·목적 외 질문을 그래프 맨 앞에서 거절한다.
+    guardrail_enabled: bool = True
+
     main_model_provider: Provider = "openai"
     summary_model_provider: Provider = "openai"
     # 노드별 공급자. 비우면 main 과 같은 공급자를 쓴다.
     router_model_provider: Provider | None = None
     search_model_provider: Provider | None = None
     rag_model_provider: Provider | None = None
+    guardrail_model_provider: Provider | None = None
     openai_timeout_seconds: int = 18
     gemini_timeout_seconds: int = 20
     ai_timeout_seconds: int = 60

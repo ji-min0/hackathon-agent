@@ -11,10 +11,16 @@
     single      START → single(모든 툴을 가진 에이전트 하나) → END
     supervisor  START → supervisor(담당 에이전트를 툴로 호출해 결과 종합) → END
 
+GUARDRAIL_ENABLED 이면 세 패턴 모두 맨 앞에 guardrail 노드가 붙는다.
+
+    START → guardrail → (거절) END
+                      → (통과) 패턴의 첫 노드
+
 자세한 내용은 docs/API_SPEC.md 5장 참고.
 """
 
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,10 +54,12 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from pydantic import BaseModel, Field
 
 from app.chat.prompts import (
+    GUARDRAIL_PROMPT,
     NO_RAG_DOCUMENTS,
     RAG_PROMPT,
     ROUTER_PROMPT,
     SEARCH_PROMPT,
+    SERVICE_SCOPE,
     SINGLE_PROMPT,
     SUMMARY_PROMPT,
     SUPERVISOR_PROMPT,
@@ -149,6 +157,8 @@ class ChatState(MessagesState):
     # 답한 경로. router 는 분류기가 고른 값, single·supervisor 는 그 턴에 쓴 툴로 정한다.
     # 응답·로그에 함께 남겨 디버깅과 대시보드에 쓴다.
     route: str
+    # 가드레일이 거절했으면 True. 거절된 턴은 에이전트를 거치지 않고 끝난다.
+    blocked: bool
 
 
 class RouteDecision(BaseModel):
@@ -421,6 +431,85 @@ def build_agent_tool(sub_agent, name: str, description: str) -> BaseTool:
     return tool(name, description=description)(run)
 
 
+GuardrailCategory = Literal["safe", "harmful", "personal_info", "prompt_injection", "off_topic"]
+
+
+class GuardrailDecision(BaseModel):
+    """가드레일 출력 스키마. 모델이 쓴 JSON 을 이 형식으로 검증한다."""
+
+    allowed: bool
+    category: GuardrailCategory
+    reason: str
+
+
+# 형식이 정해진 개인정보는 모델을 부르지 않고 바로 거절한다. 빠르고 확실하다.
+SENSITIVE_PATTERNS = {
+    "resident_number": re.compile(r"\b\d{6}\s*-\s*[1-4]\d{6}\b"),
+    "card_number": re.compile(r"\b\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4}\b"),
+}
+
+REFUSALS: dict[str, str] = {
+    "harmful": "죄송하지만 다른 사람이나 자신에게 해가 될 수 있는 요청에는 답할 수 없어요.",
+    "personal_info": (
+        "주민등록번호, 카드·계좌번호, 비밀번호 같은 민감한 개인정보는 보내지 말아 주세요. "
+        "해당 부분을 지우고 다시 질문해 주세요."
+    ),
+    "prompt_injection": "죄송하지만 시스템 설정을 바꾸거나 내부 정보를 요구하는 요청은 처리할 수 없어요.",
+    "off_topic": "죄송하지만 이 서비스에서 다루지 않는 주제예요. 서비스와 관련된 질문을 해 주세요.",
+}
+
+
+def build_guardrail(provider: str):
+    """GuardrailDecision 을 돌려주는 판정기. 분류기와 같은 이유로 JSON 프롬프트를 쓴다."""
+    return build_model(provider) | PydanticOutputParser(pydantic_object=GuardrailDecision)
+
+
+def latest_user_text(messages: list[AnyMessage]) -> str:
+    return next((m.text for m in reversed(messages) if isinstance(m, HumanMessage)), "")
+
+
+def build_guardrail_node(checker):
+    """가드레일 노드. 규칙(정규식) → 모델 판정 순서로 검사한다.
+
+    판정 모델이 실패하면 통과시킨다(fail-open). 대화가 끊기지 않는 것을 우선한다.
+    """
+
+    def blocked(category: str, reason: str) -> dict:
+        log_event("guardrail_blocked", category=category, reason=reason)
+        return {
+            "messages": [AIMessage(content=REFUSALS[category])],
+            "route": "blocked",
+            "blocked": True,
+        }
+
+    async def guardrail(state: ChatState) -> dict:
+        text = latest_user_text(state["messages"])
+        for name, pattern in SENSITIVE_PATTERNS.items():
+            if pattern.search(text):
+                return blocked("personal_info", name)
+
+        try:
+            decision = await checker.ainvoke(
+                [
+                    SystemMessage(GUARDRAIL_PROMPT.format(service_scope=SERVICE_SCOPE)),
+                    HumanMessage(f"<latest_message>\n{text}\n</latest_message>"),
+                ]
+            )
+        except Exception as exc:
+            log_event("guardrail_failed", level=logging.WARNING, error=type(exc).__name__)
+            return {"blocked": False}
+
+        if not decision.allowed and decision.category in REFUSALS:
+            return blocked(decision.category, decision.reason)
+        return {"blocked": False}
+
+    return guardrail
+
+
+def after_guardrail(state: ChatState) -> str:
+    return "blocked" if state.get("blocked") else "allowed"
+
+
 @dataclass(frozen=True)
 class GraphParts:
     """패턴별 그래프가 공유하는 재료. 검색·RAG 가 꺼져 있으면 해당 값이 None 이다."""
@@ -433,7 +522,7 @@ class GraphParts:
     rag_documents: str
 
 
-def build_router_graph(parts: GraphParts) -> StateGraph:
+def build_router_graph(parts: GraphParts) -> tuple[StateGraph, str]:
     """라우터 + 전문 담당. 분류기가 담당 하나를 골라 보낸다."""
     router = build_router(settings.router_model_provider or settings.main_model_provider)
 
@@ -457,13 +546,12 @@ def build_router_graph(parts: GraphParts) -> StateGraph:
         graph.add_edge("rag", END)
         destinations["rag"] = "rag"
 
-    graph.add_edge(START, "classify")
     graph.add_conditional_edges("classify", select_agent, destinations)
     graph.add_edge("general", END)
-    return graph
+    return graph, "classify"
 
 
-def build_single_graph(parts: GraphParts) -> StateGraph:
+def build_single_graph(parts: GraphParts) -> tuple[StateGraph, str]:
     """단일 에이전트 + 도구. 에이전트 하나가 대화 맥락과 모든 툴을 다룬다."""
     tools = []
     if parts.document_tool is not None:
@@ -483,12 +571,11 @@ def build_single_graph(parts: GraphParts) -> StateGraph:
 
     graph = StateGraph(ChatState)
     graph.add_node("single", build_agent_node(single_agent, track_route=True))
-    graph.add_edge(START, "single")
     graph.add_edge("single", END)
-    return graph
+    return graph, "single"
 
 
-def build_supervisor_graph(parts: GraphParts) -> StateGraph:
+def build_supervisor_graph(parts: GraphParts) -> tuple[StateGraph, str]:
     """Supervisor + 서브 에이전트. 상위 에이전트가 일을 나눠 맡기고 결과를 합친다."""
     tools = []
     if parts.rag_model is not None:
@@ -525,9 +612,8 @@ def build_supervisor_graph(parts: GraphParts) -> StateGraph:
 
     graph = StateGraph(ChatState)
     graph.add_node("supervisor", build_agent_node(supervisor, track_route=True))
-    graph.add_edge(START, "supervisor")
     graph.add_edge("supervisor", END)
-    return graph
+    return graph, "supervisor"
 
 
 GRAPH_BUILDERS = {
@@ -569,5 +655,16 @@ def build_agent(checkpointer, pool=None, rag_sources: Sequence[str] = ()):
         document_tool=document_tool,
         rag_documents=format_documents(rag_sources),
     )
-    graph = GRAPH_BUILDERS[settings.agent_pattern](parts)
+    graph, entry = GRAPH_BUILDERS[settings.agent_pattern](parts)
+
+    if settings.guardrail_enabled:
+        checker = build_guardrail(settings.guardrail_model_provider or settings.main_model_provider)
+        graph.add_node("guardrail", build_guardrail_node(checker))
+        graph.add_edge(START, "guardrail")
+        graph.add_conditional_edges(
+            "guardrail", after_guardrail, {"blocked": END, "allowed": entry}
+        )
+    else:
+        graph.add_edge(START, entry)
+
     return graph.compile(checkpointer=checkpointer, name="chat_graph")
