@@ -248,9 +248,19 @@ def build_general_agent(main_model, summary_model):
     )
 
 
+class SearchQuery(BaseModel):
+    """모델에게 보여 주는 검색 툴 입력. 검색어 하나만 받는다."""
+
+    query: str = Field(description="Search query, written like a person would type it.")
+
+
 def build_search_tool() -> TavilySearch:
     """Tavily 웹 검색 툴. 키는 settings 에서 직접 넘긴다(.env 는 OS 환경 변수가 아니다)."""
     return TavilySearch(
+        # 기본 입력 스키마에는 time_range, search_depth, include_domains 같은 선택 인자가
+        # 있다. gpt-5-mini 가 이를 임의로 채워(time_range="day" 등) 결과가 0건이 되는 일이
+        # 잦아서, 모델에게는 검색어만 보여 준다.
+        args_schema=SearchQuery,
         max_results=settings.tavily_max_results,
         tavily_api_key=settings.tavily_api_key,
         # Tavily 가 결과를 요약한 짧은 답도 함께 받는다. 모델이 읽을 양이 줄어든다.

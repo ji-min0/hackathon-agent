@@ -8,6 +8,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.chat import agent
@@ -271,6 +272,13 @@ def test_search_tool_gets_key_from_settings(monkeypatch) -> None:
 
     assert search_tool.max_results == 3
     assert search_tool.api_wrapper.tavily_api_key.get_secret_value() == "tvly-test"
+
+
+def test_search_tool_exposes_only_query() -> None:
+    # 선택 인자(time_range 등)를 모델이 임의로 채우면 결과가 0건이 되곤 했다.
+    schema = convert_to_openai_tool(agent.build_search_tool())["function"]["parameters"]
+
+    assert list(schema["properties"]) == ["query"]
 
 
 @pytest.mark.parametrize(
