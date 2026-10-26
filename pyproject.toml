@@ -9,7 +9,6 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "jinja2>=3.1",
-    "python-multipart>=0.0.9",
     "pydantic-settings>=2.6",
     # EmailStr 검증에 필요하다.
     "pydantic[email]>=2.9",
@@ -75,7 +74,8 @@ ignore = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "-q"
+# 테스트 파일 이름이 폴더마다 겹쳐도(test_service.py 등) 충돌하지 않게 한다.
+addopts = "-q --import-mode=importlib"
 
 [tool.coverage.run]
 source = ["app"]

@@ -115,8 +115,8 @@ app/
 ├─ core/          설정, DB 풀, 로깅, 미들웨어, 예외
 ├─ auth/          회원가입·로그인·토큰 검증
 ├─ threads/       대화방 CRUD
-├─ chat/          메시지 전송, 그래프(agent.py), 모델 공급자(models.py), 프롬프트(prompts.py)
-├─ rag/           청크 분할, 임베딩, pgvector 저장·검색
+├─ chat/          메시지 전송, 그래프(agent.py), 가드레일(guardrail.py), 모델 공급자(models.py), 프롬프트(prompts.py)
+├─ rag/           청크 분할, 임베딩, pgvector 저장·검색, 문서 검색 툴(tool.py)
 ├─ admin/         관리자 API(대시보드·프롬프트 버전)
 └─ web/           Jinja2 화면 라우터
 

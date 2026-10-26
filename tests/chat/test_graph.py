@@ -1,6 +1,7 @@
 """멀티 에이전트 그래프 테스트. 실제 LLM 대신 정해진 답을 내는 가짜 모델을 쓴다."""
 
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from langchain_core.exceptions import OutputParserException
@@ -12,7 +13,8 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from app.chat import agent
+from app.chat import agent, guardrail
+from app.rag import tool as rag_tool
 
 
 def fake_model(*answers: str) -> GenericFakeChatModel:
@@ -53,22 +55,29 @@ def failing_router() -> RunnableLambda:
     return RunnableLambda(fail)
 
 
-def build_test_graph(monkeypatch, main_model, summary_model, router=None, **overrides):
+def use_settings(monkeypatch, **overrides) -> None:
+    """그래프 테스트용 가짜 설정. 설정 항목을 추가하면 여기만 고친다."""
     values = {
-        "main_model_provider": "main",
-        "summary_model_provider": "summary",
-        "summary_trigger_tokens": 8000,
-        "summary_keep_tokens": 4000,
         "agent_pattern": "router",
         "guardrail_enabled": False,
+        "guardrail_model_provider": None,
         "hitl_tool_names": [],
+        "main_model_provider": "main",
+        "summary_model_provider": "summary",
         "router_model_provider": None,
         "search_model_provider": None,
+        "rag_model_provider": None,
+        "summary_trigger_tokens": 8000,
+        "summary_keep_tokens": 4000,
         "tavily_api_key": "",
         "tavily_max_results": 5,
         **overrides,
     }
     monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+
+
+def build_test_graph(monkeypatch, main_model, summary_model, router=None, **overrides):
+    use_settings(monkeypatch, **overrides)
     models = {"main": main_model, "summary": summary_model}
     monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
     monkeypatch.setattr(agent, "build_router", lambda provider: router or fake_router())
@@ -306,20 +315,7 @@ def test_node_providers_default_to_main(
 ) -> None:
     models: list[str] = []
     routers: list[str] = []
-    values = {
-        "agent_pattern": "router",
-        "guardrail_enabled": False,
-        "hitl_tool_names": [],
-        "main_model_provider": "main",
-        "summary_model_provider": "summary",
-        "router_model_provider": None,
-        "search_model_provider": None,
-        "summary_trigger_tokens": 8000,
-        "summary_keep_tokens": 4000,
-        "tavily_api_key": "test-tavily-key",
-        **overrides,
-    }
-    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    use_settings(monkeypatch, tavily_api_key="test-tavily-key", **overrides)
     monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool([]))
     monkeypatch.setattr(
         agent, "build_model", lambda p: models.append(p) or FakeToolModel(messages=iter([]))
@@ -398,19 +394,9 @@ async def test_supervisor_delegates_self_contained_task_to_search_agent(monkeypa
         messages=iter([tool_call("부산 날씨", "t1"), AIMessage("부산 맑음, 출처: example.com")])
     )
     models = {"main": supervisor_model, "summary": fake_model(), "search": search_model}
-    values = {
-        "agent_pattern": "supervisor",
-        "guardrail_enabled": False,
-        "hitl_tool_names": [],
-        "main_model_provider": "main",
-        "summary_model_provider": "summary",
-        "router_model_provider": None,
-        "search_model_provider": "search",
-        "summary_trigger_tokens": 8000,
-        "summary_keep_tokens": 4000,
-        "tavily_api_key": "k",
-    }
-    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    use_settings(
+        monkeypatch, agent_pattern="supervisor", search_model_provider="search", tavily_api_key="k"
+    )
     monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
     monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool(calls))
     graph = agent.build_agent(InMemorySaver())
@@ -443,22 +429,8 @@ def build_rag_graph(monkeypatch, rag_model, router, calls: list[str], **override
     monkeypatch.setattr(
         agent, "build_document_search_tool", lambda pool, embeddings: fake_document_tool(calls)
     )
-    values = {
-        "agent_pattern": "router",
-        "guardrail_enabled": False,
-        "hitl_tool_names": [],
-        "main_model_provider": "main",
-        "summary_model_provider": "summary",
-        "router_model_provider": None,
-        "search_model_provider": None,
-        "rag_model_provider": "rag",
-        "summary_trigger_tokens": 8000,
-        "summary_keep_tokens": 4000,
-        "tavily_api_key": "",
-        **overrides,
-    }
     models = {"main": fake_model("일반 답"), "summary": fake_model(), "rag": rag_model}
-    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    use_settings(monkeypatch, rag_model_provider="rag", **overrides)
     monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
     monkeypatch.setattr(agent, "build_router", lambda provider: router)
     return agent.build_agent(InMemorySaver(), pool=object(), rag_sources=["guide.pdf"])
@@ -518,15 +490,15 @@ def test_format_passages_cites_source_and_page() -> None:
         {"source": "rules.md", "page": None, "content": "규칙", "score": 0.5},
     ]
 
-    text = agent.format_passages(rows)
+    text = rag_tool.format_passages(rows)
 
     assert "[guide.pdf p.2] (score 0.81)\n마감 13시" in text
     assert "[rules.md] (score 0.50)\n규칙" in text
-    assert agent.format_passages([]) == "No matching passages found in the documents."
+    assert rag_tool.format_passages([]) == "No matching passages found in the documents."
 
 
 def fake_guardrail(allowed: bool = True, category: str = "safe") -> RunnableLambda:
-    decision = agent.GuardrailDecision(allowed=allowed, category=category, reason="test")
+    decision = guardrail.GuardrailDecision(allowed=allowed, category=category, reason="test")
     return RunnableLambda(lambda _: decision)
 
 
@@ -554,7 +526,7 @@ async def test_guardrail_blocks_and_skips_agents(monkeypatch) -> None:
     )
 
     assert result["route"] == "blocked"
-    assert result["messages"][-1].content == agent.REFUSALS["prompt_injection"]
+    assert result["messages"][-1].content == guardrail.REFUSALS["prompt_injection"]
 
 
 @pytest.mark.asyncio
@@ -588,7 +560,7 @@ async def test_guardrail_regex_blocks_resident_number_without_model(monkeypatch)
     )
 
     assert result["route"] == "blocked"
-    assert result["messages"][-1].content == agent.REFUSALS["personal_info"]
+    assert result["messages"][-1].content == guardrail.REFUSALS["personal_info"]
 
 
 @pytest.mark.asyncio
@@ -626,7 +598,7 @@ async def test_blocked_turn_does_not_block_next_turn(monkeypatch) -> None:
     ],
 )
 def test_sensitive_patterns(text: str, blocked: bool) -> None:
-    assert any(p.search(text) for p in agent.SENSITIVE_PATTERNS.values()) is blocked
+    assert any(p.search(text) for p in guardrail.SENSITIVE_PATTERNS.values()) is blocked
 
 
 @pytest.mark.asyncio
@@ -644,20 +616,13 @@ async def test_approval_tool_pauses_until_resumed(monkeypatch, pattern) -> None:
         main = FakeToolModel(messages=iter([tool_call("서울 날씨", "t1"), AIMessage("최종: 맑음")]))
         search = main
     models = {"main": main, "summary": fake_model(), "search": search}
-    values = {
-        "agent_pattern": pattern,
-        "guardrail_enabled": False,
-        "hitl_tool_names": ["tavily_search"],
-        "main_model_provider": "main",
-        "summary_model_provider": "summary",
-        "router_model_provider": None,
-        "search_model_provider": "search",
-        "rag_model_provider": None,
-        "summary_trigger_tokens": 8000,
-        "summary_keep_tokens": 4000,
-        "tavily_api_key": "k",
-    }
-    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    use_settings(
+        monkeypatch,
+        agent_pattern=pattern,
+        hitl_tool_names=["tavily_search"],
+        search_model_provider="search",
+        tavily_api_key="k",
+    )
     monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
     monkeypatch.setattr(agent, "build_router", lambda provider: fake_router("search"))
     monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool(calls))
@@ -678,3 +643,22 @@ async def test_approval_tool_pauses_until_resumed(monkeypatch, pattern) -> None:
     assert calls == ["서울 날씨"]
     assert done["messages"][-1].content == "최종: 맑음"
     assert "__interrupt__" not in done
+
+
+def test_every_route_has_a_node(monkeypatch) -> None:
+    # 새 담당을 추가할 때 Route 와 router 그래프 연결이 어긋나면 그 경로가 조용히 general 로 간다.
+    use_settings(monkeypatch, tavily_api_key="k", rag_model_provider="rag")
+    monkeypatch.setattr(agent, "build_model", lambda provider: FakeToolModel(messages=iter([])))
+    monkeypatch.setattr(agent, "build_router", lambda provider: fake_router())
+    monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool([]))
+    monkeypatch.setattr(agent, "build_embeddings", lambda: None)
+    monkeypatch.setattr(
+        agent, "build_document_search_tool", lambda pool, embeddings: fake_document_tool([])
+    )
+
+    graph = agent.build_agent(InMemorySaver(), pool=object(), rag_sources=["guide.pdf"])
+
+    nodes = set(graph.get_graph().nodes)
+    assert set(get_args(agent.Route)) <= nodes
+    # single·supervisor 의 툴 이름표도 Route 안의 값만 쓴다.
+    assert set(agent.TOOL_ROUTES.values()) <= set(get_args(agent.Route))

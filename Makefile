@@ -17,7 +17,7 @@ test: ## 테스트
 	uv run pytest
 
 test-db: ## 실제 PostgreSQL(pgvector)로 관리자·RAG SQL 테스트 (Docker 필요)
-	@docker run -d --rm --name chatbot-test-db -e POSTGRES_PASSWORD=test -p 55432:5432 pgvector/pgvector:pg17 > /dev/null
+	@docker rm -f chatbot-test-db > /dev/null 2>&1; docker run -d --rm --name chatbot-test-db -e POSTGRES_PASSWORD=test -p 55432:5432 pgvector/pgvector:pg17 > /dev/null
 	@until docker exec chatbot-test-db psql -U postgres -c "select 1" > /dev/null 2>&1; do sleep 1; done
 	@TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres uv run pytest tests/integration; \
 		status=$$?; docker stop chatbot-test-db > /dev/null; exit $$status

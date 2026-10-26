@@ -11,16 +11,25 @@
     single      START → single(모든 툴을 가진 에이전트 하나) → END
     supervisor  START → supervisor(담당 에이전트를 툴로 호출해 결과 종합) → END
 
-GUARDRAIL_ENABLED 이면 세 패턴 모두 맨 앞에 guardrail 노드가 붙는다.
-모델 공급자(OpenAI·Anthropic·Gemini, vLLM 교체)는 app/chat/models.py 에 있다.
+GUARDRAIL_ENABLED 이면 세 패턴 모두 맨 앞에 guardrail 노드가 붙는다(app/chat/guardrail.py).
 
     START → guardrail → (거절) END
                       → (통과) 패턴의 첫 노드
 
+모델 공급자(OpenAI·Anthropic·Gemini, vLLM 교체)는 app/chat/models.py,
+문서 검색 툴은 app/rag/tool.py 에 있다.
+
+새 담당 에이전트(예: sql) 추가 체크리스트. 하나라도 빠지면 조용히 general 로 간다.
+  1. Route 에 이름을 넣는다                      (빠지면 분류기 출력 검증 실패 → general)
+  2. prompts.py: 담당 프롬프트, EDITABLE_PROMPTS, ROUTER_PROMPT 의 <agents>·예시
+  3. build_xxx_agent 를 만들고 GraphParts 에 재료(모델·툴)를 넣는다, build_agent 에서 채운다
+  4. build_router_graph: 노드 추가 + destinations 연결
+  5. build_single_graph: 툴 추가 / build_supervisor_graph: build_agent_tool 로 담당 추가
+  6. TOOL_ROUTES 에 툴 이름 → 경로, SINGLE_PROMPT·SUPERVISOR_PROMPT 에 설명
+  tests/chat/test_graph.py 의 test_every_route_has_a_node 가 1·4 누락을 잡는다.
 """
 
 import logging
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,7 +44,6 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     dynamic_prompt,
 )
-from langchain_core.embeddings import Embeddings
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
@@ -51,12 +59,13 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from pydantic import BaseModel, Field
 
+from app.chat.guardrail import after_guardrail, build_guardrail, build_guardrail_node
 from app.chat.models import build_model
 from app.chat.prompts import NO_RAG_DOCUMENTS, get_prompt
 from app.core.config import settings
 from app.core.logging import log_event
-from app.rag import store
 from app.rag.embeddings import build_embeddings
+from app.rag.tool import build_document_search_tool
 
 Route = Literal["rag", "search", "general"]
 
@@ -260,29 +269,6 @@ def build_search_agent(main_model, summary_model):
     )
 
 
-def format_passages(rows: list[dict]) -> str:
-    """검색된 청크를 모델이 출처를 인용할 수 있는 형태로 이어 붙인다."""
-    if not rows:
-        return "No matching passages found in the documents."
-    blocks = []
-    for row in rows:
-        page = f" p.{row['page']}" if row["page"] is not None else ""
-        blocks.append(f"[{row['source']}{page}] (score {row['score']:.2f})\n{row['content']}")
-    return "\n\n---\n\n".join(blocks)
-
-
-def build_document_search_tool(pool, embeddings: Embeddings) -> BaseTool:
-    """등록된 문서에서 질문과 뜻이 가까운 청크를 찾는 툴."""
-
-    async def search_documents(query: str) -> str:
-        """Searches the registered internal documents and returns the most relevant passages
-        with their document name and page."""
-        vector = await embeddings.aembed_query(query)
-        return format_passages(await store.search(pool, vector, settings.rag_top_k))
-
-    return tool(search_documents)
-
-
 # RAG 에이전트가 한 번 답할 때 부를 수 있는 툴 횟수(문서 검색 2번 + 웹 검색 1번 정도).
 RAG_CALL_LIMIT = 3
 
@@ -358,89 +344,6 @@ def build_agent_tool(sub_agent, name: str, description: str) -> BaseTool:
         return result["messages"][-1].text
 
     return tool(name, description=description)(run)
-
-
-GuardrailCategory = Literal["safe", "harmful", "personal_info", "prompt_injection", "off_topic"]
-
-
-class GuardrailDecision(BaseModel):
-    """가드레일 출력 스키마. 모델이 쓴 JSON 을 이 형식으로 검증한다."""
-
-    allowed: bool
-    category: GuardrailCategory
-    reason: str
-
-
-# 형식이 정해진 개인정보는 모델을 부르지 않고 바로 거절한다. 빠르고 확실하다.
-SENSITIVE_PATTERNS = {
-    "resident_number": re.compile(r"\b\d{6}\s*-\s*[1-4]\d{6}\b"),
-    "card_number": re.compile(r"\b\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4}\b"),
-}
-
-REFUSALS: dict[str, str] = {
-    "harmful": "죄송하지만 다른 사람이나 자신에게 해가 될 수 있는 요청에는 답할 수 없어요.",
-    "personal_info": (
-        "주민등록번호, 카드·계좌번호, 비밀번호 같은 민감한 개인정보는 보내지 말아 주세요. "
-        "해당 부분을 지우고 다시 질문해 주세요."
-    ),
-    "prompt_injection": "죄송하지만 시스템 설정을 바꾸거나 내부 정보를 요구하는 요청은 처리할 수 없어요.",
-    "off_topic": "죄송하지만 이 서비스에서 다루지 않는 주제예요. 서비스와 관련된 질문을 해 주세요.",
-}
-
-
-def build_guardrail(provider: str):
-    """GuardrailDecision 을 돌려주는 판정기. 분류기와 같은 이유로 JSON 프롬프트를 쓴다."""
-    return build_model(provider) | PydanticOutputParser(pydantic_object=GuardrailDecision)
-
-
-def latest_user_text(messages: list[AnyMessage]) -> str:
-    return next((m.text for m in reversed(messages) if isinstance(m, HumanMessage)), "")
-
-
-def build_guardrail_node(checker):
-    """가드레일 노드. 규칙(정규식) → 모델 판정 순서로 검사한다.
-
-    판정 모델이 실패하면 통과시킨다(fail-open). 대화가 끊기지 않는 것을 우선한다.
-    """
-
-    def blocked(category: str, reason: str) -> dict:
-        log_event("guardrail_blocked", category=category, reason=reason)
-        return {
-            "messages": [AIMessage(content=REFUSALS[category])],
-            "route": "blocked",
-            "blocked": True,
-        }
-
-    async def guardrail(state: ChatState) -> dict:
-        text = latest_user_text(state["messages"])
-        for name, pattern in SENSITIVE_PATTERNS.items():
-            if pattern.search(text):
-                return blocked("personal_info", name)
-
-        try:
-            decision = await checker.ainvoke(
-                [
-                    SystemMessage(
-                        get_prompt("GUARDRAIL_PROMPT").format(
-                            service_scope=get_prompt("SERVICE_SCOPE")
-                        )
-                    ),
-                    HumanMessage(f"<latest_message>\n{text}\n</latest_message>"),
-                ]
-            )
-        except Exception as exc:
-            log_event("guardrail_failed", level=logging.WARNING, error=type(exc).__name__)
-            return {"blocked": False}
-
-        if not decision.allowed and decision.category in REFUSALS:
-            return blocked(decision.category, decision.reason)
-        return {"blocked": False}
-
-    return guardrail
-
-
-def after_guardrail(state: ChatState) -> str:
-    return "blocked" if state.get("blocked") else "allowed"
 
 
 @dataclass(frozen=True)
