@@ -399,6 +399,7 @@ $form.addEventListener("submit", async (e) => {
       return;
     }
 
+    // 툴 실행 승인을 기다리면(휴먼인더루프) 안내 문장이 답으로 온다. 사용자는 채팅으로 "네"/"아니요"를 보낸다.
     pending.className = "bubble assistant";
     pending.textContent = body.answer;
 

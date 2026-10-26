@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from app.chat import agent
 
@@ -60,6 +61,7 @@ def build_test_graph(monkeypatch, main_model, summary_model, router=None, **over
         "summary_keep_tokens": 4000,
         "agent_pattern": "router",
         "guardrail_enabled": False,
+        "hitl_tool_names": [],
         "router_model_provider": None,
         "search_model_provider": None,
         "tavily_api_key": "",
@@ -303,6 +305,7 @@ def test_node_providers_default_to_main(
     values = {
         "agent_pattern": "router",
         "guardrail_enabled": False,
+        "hitl_tool_names": [],
         "main_model_provider": "main",
         "summary_model_provider": "summary",
         "router_model_provider": None,
@@ -394,6 +397,7 @@ async def test_supervisor_delegates_self_contained_task_to_search_agent(monkeypa
     values = {
         "agent_pattern": "supervisor",
         "guardrail_enabled": False,
+        "hitl_tool_names": [],
         "main_model_provider": "main",
         "summary_model_provider": "summary",
         "router_model_provider": None,
@@ -438,6 +442,7 @@ def build_rag_graph(monkeypatch, rag_model, router, calls: list[str], **override
     values = {
         "agent_pattern": "router",
         "guardrail_enabled": False,
+        "hitl_tool_names": [],
         "main_model_provider": "main",
         "summary_model_provider": "summary",
         "router_model_provider": None,
@@ -618,3 +623,54 @@ async def test_blocked_turn_does_not_block_next_turn(monkeypatch) -> None:
 )
 def test_sensitive_patterns(text: str, blocked: bool) -> None:
     assert any(p.search(text) for p in agent.SENSITIVE_PATTERNS.values()) is blocked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["router", "single", "supervisor"])
+async def test_approval_tool_pauses_until_resumed(monkeypatch, pattern) -> None:
+    calls: list[str] = []
+    if pattern == "supervisor":
+        delegate = AIMessage(
+            content="",
+            tool_calls=[{"name": "search_agent", "args": {"task": "서울 날씨"}, "id": "s1"}],
+        )
+        main = FakeToolModel(messages=iter([delegate, AIMessage("최종: 맑음")]))
+        search = FakeToolModel(messages=iter([tool_call("서울 날씨", "t1"), AIMessage("맑음")]))
+    else:
+        main = FakeToolModel(messages=iter([tool_call("서울 날씨", "t1"), AIMessage("최종: 맑음")]))
+        search = main
+    models = {"main": main, "summary": fake_model(), "search": search}
+    values = {
+        "agent_pattern": pattern,
+        "guardrail_enabled": False,
+        "hitl_tool_names": ["tavily_search"],
+        "main_model_provider": "main",
+        "summary_model_provider": "summary",
+        "router_model_provider": None,
+        "search_model_provider": "search",
+        "rag_model_provider": None,
+        "summary_trigger_tokens": 8000,
+        "summary_keep_tokens": 4000,
+        "tavily_api_key": "k",
+    }
+    monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
+    monkeypatch.setattr(agent, "build_model", lambda provider: models[provider])
+    monkeypatch.setattr(agent, "build_router", lambda provider: fake_router("search"))
+    monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool(calls))
+    graph = agent.build_agent(InMemorySaver())
+    config = thread_config(f"h-{pattern}")
+
+    paused = await graph.ainvoke({"messages": [{"role": "user", "content": "날씨"}]}, config)
+
+    # 승인 전에는 검색하지 않는다. 하위 에이전트 안에서 멈춰도 부모 그래프까지 전달된다.
+    assert calls == []
+    request = paused["__interrupt__"][0].value["action_requests"][0]
+    assert (request["name"], request["args"]) == ("tavily_search", {"query": "서울 날씨"})
+
+    snapshot = await graph.aget_state(config)
+    resume = {item.id: {"decisions": [{"type": "approve"}]} for item in snapshot.interrupts}
+    done = await graph.ainvoke(Command(resume=resume), config)
+
+    assert calls == ["서울 날씨"]
+    assert done["messages"][-1].content == "최종: 맑음"
+    assert "__interrupt__" not in done

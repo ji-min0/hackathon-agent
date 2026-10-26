@@ -618,12 +618,24 @@ POST /api/threads/{thread_id}/messages
 {
   "thread_id": "5aa60fa8-c927-4416-b559-f9661b7df00f",
   "answer": "SQLite를 사용한다고 하셨습니다.",
-  "route": "general"
+  "route": "general",
+  "status": "done",
+  "pending": []
 }
 ```
 
-`route` 는 답한 경로다(`rag` | `search` | `general`). `AGENT_PATTERN` 이 single·supervisor 이면
-그 턴에 실제로 쓴 툴로 정하고, 여러 담당을 쓰면 `rag+search` 처럼 합친다. 디버깅·대시보드용이다.
+`route` 는 답한 경로다(`rag` | `search` | `general`, 가드레일이 거절하면 `blocked`).
+`AGENT_PATTERN` 이 single·supervisor 이면 그 턴에 실제로 쓴 툴로 정하고, 여러 담당을 쓰면
+`rag+search` 처럼 합친다. 디버깅·대시보드용이다.
+
+`status` 가 `interrupted` 이면 `HITL_TOOLS` 에 적은 툴의 실행 승인을 기다리는 중이다(휴먼인더루프).
+`pending` 에 실행하려는 툴 호출(`name`, `args`)이 담기고, `answer` 는 "진행할까요? '네' 또는
+'아니요'로 답해 주세요" 안내 문장이다.
+
+- 사용자가 같은 엔드포인트로 "네", "응", "좋아" 같은 짧은 답을 보내면 승인, "아니요", "취소" 면 거절로
+  처리하고 이어서 답한다(웹 화면은 이 방식을 쓴다).
+- 그 밖의 메시지는 새 질문으로 보고, 대기 중인 작업은 버린다.
+- 프로그램에서는 7.5.1 로 결정만 보낼 수도 있다.
 
 **오류 발생 시** — LLM 호출 실패나 타임아웃도 `chat_logs` 에 기록한다.
 
@@ -643,6 +655,31 @@ error_message = 실제 오류 내용
 
 사용자에게 노출하는 메시지에는 내부 오류 원문을 담지 않는다.
 원문은 `chat_logs.error_message` 와 서버 로그에만 남긴다.
+
+### 7.5.1 툴 실행 승인·거절 (휴먼인더루프)
+
+`POST /api/threads/{thread_id}/resume`
+
+```json
+{ "decision": "approve" }
+```
+
+`decision` 은 `approve` | `reject`. 응답은 7.5 와 같다. 승인하면 툴을 실행해 답하고, 거절하면
+툴 없이 답한다. 툴이 또 승인을 요구하면 다시 `interrupted` 가 온다. 기다리는 작업이 없으면 422.
+`chat_logs.question` 에는 `[승인]` 또는 `[거절]` 이 남는다.
+
+### 7.5.2 단일 진입점
+
+`POST /chat` — 외부·평가 스크립트용. 새 질문과 승인·거절을 한 엔드포인트에서 받는다(로그인 필요).
+
+```json
+{ "thread_id": null, "message": "해커톤 제출 마감이 언제야?" }
+{ "thread_id": "5aa60fa8-...", "resume": "approve" }
+```
+
+- `message` 와 `resume` 중 하나만 보낸다. 둘 다 있거나 없으면 422.
+- `thread_id` 없이 `message` 를 보내면 새 대화방을 만든다(제목은 질문 앞 30자).
+- 응답은 7.5 와 같고, `thread_id` 로 다음 요청을 이어 간다.
 
 ### 7.6 채팅 삭제
 

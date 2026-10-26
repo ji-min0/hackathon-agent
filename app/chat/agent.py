@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
+    HumanInTheLoopMiddleware,
     ModelRequest,
     SummarizationMiddleware,
     ToolCallLimitMiddleware,
@@ -303,6 +304,23 @@ def build_search_tool() -> TavilySearch:
 SEARCH_CALL_LIMIT = 2
 
 
+def approval_middleware() -> list:
+    """HITL_TOOLS 에 적은 툴은 실행 직전에 멈추고 사람 승인을 기다린다(휴먼인더루프).
+
+    멈추면 그래프가 interrupt 를 돌려주고, Command(resume=...) 로 승인·거절을 넘기면
+    이어서 실행한다. 체크포인터가 멈춘 지점을 저장하므로 다른 요청에서 재개할 수 있다.
+    """
+    tools = settings.hitl_tool_names
+    if not tools:
+        return []
+    return [
+        HumanInTheLoopMiddleware(
+            interrupt_on={name: {"allowed_decisions": ["approve", "reject"]} for name in tools},
+            description_prefix="실행 전에 승인이 필요해요",
+        )
+    ]
+
+
 def dated_prompt(template: str, **fields: str):
     """호출 시점의 날짜를 {today} 에 넣는 프롬프트 미들웨어를 만든다.
 
@@ -324,6 +342,7 @@ def build_search_agent(main_model, summary_model):
         tools=[build_search_tool()],
         middleware=[
             dated_prompt(SEARCH_PROMPT),
+            *approval_middleware(),
             # 검색 반복으로 60초 제한을 넘기지 않게 한 번 답할 때 최대 2번만 검색한다.
             # 넘으면 툴 대신 에러 메시지를 돌려주고, 모델은 가진 결과로 답한다.
             ToolCallLimitMiddleware(run_limit=SEARCH_CALL_LIMIT),
@@ -369,6 +388,7 @@ def build_rag_agent(rag_model, summary_model, document_tool: BaseTool, rag_docum
         tools=tools,
         middleware=[
             dated_prompt(RAG_PROMPT, rag_documents=rag_documents),
+            *approval_middleware(),
             ToolCallLimitMiddleware(run_limit=RAG_CALL_LIMIT),
             build_summarization(summary_model),
         ],
@@ -563,6 +583,7 @@ def build_single_graph(parts: GraphParts) -> tuple[StateGraph, str]:
         tools=tools,
         middleware=[
             dated_prompt(SINGLE_PROMPT, rag_documents=parts.rag_documents),
+            *approval_middleware(),
             # 문서 검색과 웹 검색을 합쳐 RAG 에이전트와 같은 횟수까지 허용한다.
             ToolCallLimitMiddleware(run_limit=RAG_CALL_LIMIT),
             build_summarization(parts.summary_model),
@@ -605,6 +626,7 @@ def build_supervisor_graph(parts: GraphParts) -> tuple[StateGraph, str]:
         tools=tools,
         middleware=[
             dated_prompt(SUPERVISOR_PROMPT, rag_documents=parts.rag_documents),
+            *approval_middleware(),
             ToolCallLimitMiddleware(run_limit=SUPERVISOR_CALL_LIMIT),
             build_summarization(parts.summary_model),
         ],

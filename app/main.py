@@ -105,6 +105,7 @@ app.include_router(web_router.router)
 app.include_router(auth_router.router)
 app.include_router(threads_router.router)
 app.include_router(chat_router.router)
+app.include_router(chat_router.chat_router)
 
 
 @app.get("/health", tags=["ops"])
