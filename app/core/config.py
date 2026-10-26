@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     anthropic_base_url: str | None = None
     anthropic_timeout_seconds: int = 40
     gemini_model_name: str = "gemini-2.5-flash"
+
+    # 웹 검색(Tavily). 비우면 search 로 분류된 질문도 general 이 답한다.
+    tavily_api_key: str = ""
+    tavily_max_results: int = 5
     main_model_provider: Literal["openai", "anthropic", "gemini"] = "openai"
     summary_model_provider: Literal["openai", "anthropic", "gemini"] = "openai"
     openai_timeout_seconds: int = 18

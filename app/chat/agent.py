@@ -13,10 +13,17 @@
 """
 
 import logging
+from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware import (
+    ModelRequest,
+    SummarizationMiddleware,
+    ToolCallLimitMiddleware,
+    dynamic_prompt,
+)
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import (
     AIMessage,
@@ -28,11 +35,18 @@ from langchain_core.messages import (
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from langchain_tavily import TavilySearch
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from pydantic import BaseModel, Field
 
-from app.chat.prompts import RAG_DOCUMENTS, ROUTER_PROMPT, SUMMARY_PROMPT, SYSTEM_PROMPT
+from app.chat.prompts import (
+    RAG_DOCUMENTS,
+    ROUTER_PROMPT,
+    SEARCH_PROMPT,
+    SUMMARY_PROMPT,
+    SYSTEM_PROMPT,
+)
 from app.core.config import settings
 from app.core.logging import log_event
 
@@ -208,26 +222,80 @@ def strip_message_names(messages: list[AnyMessage]) -> list[AnyMessage]:
     ]
 
 
+def build_summarization(summary_model) -> SummarizationMiddleware:
+    """하위 에이전트마다 붙이는 요약 미들웨어. 에이전트마다 새 인스턴스를 만든다."""
+    return SummarizationMiddleware(
+        model=summary_model,
+        # 메시지 수가 아니라 토큰 기준으로 잡는다. tool call 이 늘어나면
+        # "최근 N개 메시지 = N/2 턴" 이 성립하지 않기 때문이다.
+        trigger=("tokens", settings.summary_trigger_tokens),
+        keep=("tokens", settings.summary_keep_tokens),
+        summary_prompt=SUMMARY_PROMPT,
+    )
+
+
+# 하위 에이전트에는 체크포인터를 주지 않는다. 대화 기록은 부모 State 에 저장된다.
+# name 을 주면 답변 메시지에 name 이 붙어 게이트웨이가 거부하므로 주지 않는다.
+
+
 def build_general_agent(main_model, summary_model):
     """툴 없이 답하는 일반 질문 에이전트."""
-    middleware = [
-        SummarizationMiddleware(
-            model=summary_model,
-            # 메시지 수가 아니라 토큰 기준으로 잡는다. tool call 이 늘어나면
-            # "최근 N개 메시지 = N/2 턴" 이 성립하지 않기 때문이다.
-            trigger=("tokens", settings.summary_trigger_tokens),
-            keep=("tokens", settings.summary_keep_tokens),
-            summary_prompt=SUMMARY_PROMPT,
-        )
-    ]
-    # 체크포인터는 부모 그래프만 가진다. 대화 기록은 부모 State 에 저장된다.
-    # name 을 주면 답변 메시지에 name 이 붙어 게이트웨이가 거부하므로 주지 않는다.
     return create_agent(
         model=main_model,
         tools=[],
         system_prompt=SYSTEM_PROMPT,
-        middleware=middleware,
+        middleware=[build_summarization(summary_model)],
     )
+
+
+def build_search_tool() -> TavilySearch:
+    """Tavily 웹 검색 툴. 키는 settings 에서 직접 넘긴다(.env 는 OS 환경 변수가 아니다)."""
+    return TavilySearch(
+        max_results=settings.tavily_max_results,
+        tavily_api_key=settings.tavily_api_key,
+        # Tavily 가 결과를 요약한 짧은 답도 함께 받는다. 모델이 읽을 양이 줄어든다.
+        include_answer=True,
+        # 검색 결과가 없을 때 던지는 ToolException 을 에러 메시지로 바꿔 모델에게 돌려준다.
+        # 그래야 모델이 검색어를 바꾸거나 "찾지 못했다"고 답할 수 있다.
+        handle_tool_error=True,
+    )
+
+
+# 한 번 답할 때 허용하는 검색 횟수. 프롬프트의 "at most 2 times" 와 맞춘다.
+SEARCH_CALL_LIMIT = 2
+
+
+@dynamic_prompt
+def search_prompt(request: ModelRequest) -> str:
+    """호출 시점의 날짜를 넣는다. 서버가 며칠씩 떠 있어도 "오늘"이 맞게 풀린다."""
+    today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d (%A)")
+    return SEARCH_PROMPT.format(today=today)
+
+
+def build_search_agent(main_model, summary_model):
+    """웹을 검색해서 답하는 에이전트."""
+    return create_agent(
+        model=main_model,
+        tools=[build_search_tool()],
+        middleware=[
+            search_prompt,
+            # 검색 반복으로 60초 제한을 넘기지 않게 한 번 답할 때 최대 2번만 검색한다.
+            # 넘으면 툴 대신 에러 메시지를 돌려주고, 모델은 가진 결과로 답한다.
+            ToolCallLimitMiddleware(run_limit=SEARCH_CALL_LIMIT),
+            build_summarization(summary_model),
+        ],
+    )
+
+
+def build_agent_node(sub_agent):
+    """하위 에이전트를 부모 그래프의 노드 함수로 감싼다."""
+
+    async def node(state: ChatState) -> dict:
+        messages = strip_message_names(state["messages"])
+        result = await sub_agent.ainvoke({"messages": messages})
+        return {"messages": replace_messages(result["messages"])}
+
+    return node
 
 
 def build_agent(checkpointer):
@@ -236,27 +304,24 @@ def build_agent(checkpointer):
     # 실패 시에는 Anthropic → Gemini 순서로 자동 전환한다.
     main_model = build_model(settings.main_model_provider)
     summary_model = build_model(settings.summary_model_provider)
-    general_agent = build_general_agent(main_model, summary_model)
     # TODO(2단계): ROUTER_MODEL 등 노드별 모델을 env 로 따로 지정한다.
     router = build_router(settings.main_model_provider)
 
-    async def general(state: ChatState) -> dict:
-        messages = strip_message_names(state["messages"])
-        result = await general_agent.ainvoke({"messages": messages})
-        return {"messages": replace_messages(result["messages"])}
-
     graph = StateGraph(ChatState)
     graph.add_node("classify", build_classify(router))
-    graph.add_node("general", general)
+    graph.add_node("general", build_agent_node(build_general_agent(main_model, summary_model)))
+
+    # 검색 키가 없으면 search 노드를 만들지 않고 general 로 보낸다.
+    destinations = {"general": "general", "search": "general", "rag": "general"}
+    if settings.tavily_api_key:
+        graph.add_node("search", build_agent_node(build_search_agent(main_model, summary_model)))
+        graph.add_edge("search", END)
+        destinations["search"] = "search"
 
     graph.add_edge(START, "classify")
-    # TODO(2단계): search, rag 노드를 만들면 각 노드로 연결한다. 그 전까지는 general 이
-    # 답하되, 분류 결과(route)는 State 에 그대로 남긴다.
-    graph.add_conditional_edges(
-        "classify",
-        select_agent,
-        {"general": "general", "search": "general", "rag": "general"},
-    )
+    # TODO(3단계): rag 노드를 만들면 연결한다. 그 전까지는 general 이 답하되,
+    # 분류 결과(route)는 State 에 그대로 남긴다.
+    graph.add_conditional_edges("classify", select_agent, destinations)
     graph.add_edge("general", END)
 
     return graph.compile(checkpointer=checkpointer, name="chat_graph")

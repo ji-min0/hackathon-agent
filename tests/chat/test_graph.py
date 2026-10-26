@@ -7,6 +7,7 @@ from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.chat import agent
@@ -14,6 +15,29 @@ from app.chat import agent
 
 def fake_model(*answers: str) -> GenericFakeChatModel:
     return GenericFakeChatModel(messages=iter(AIMessage(content=a) for a in answers))
+
+
+class FakeToolModel(GenericFakeChatModel):
+    """툴을 묶을 수 있는 가짜 모델. 정해 둔 tool call 이나 답을 순서대로 낸다."""
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+
+def tool_call(query: str, call_id: str) -> AIMessage:
+    return AIMessage(
+        content="", tool_calls=[{"name": "web_search", "args": {"query": query}, "id": call_id}]
+    )
+
+
+def fake_search_tool(calls: list[str]):
+    @tool
+    def web_search(query: str) -> str:
+        """Search the web."""
+        calls.append(query)
+        return f"{query} 결과: 맑음 18도"
+
+    return web_search
 
 
 def fake_router(route: str = "general") -> RunnableLambda:
@@ -33,6 +57,8 @@ def build_test_graph(monkeypatch, main_model, summary_model, router=None, **over
         "summary_model_provider": "summary",
         "summary_trigger_tokens": 8000,
         "summary_keep_tokens": 4000,
+        "tavily_api_key": "",
+        "tavily_max_results": 5,
         **overrides,
     }
     monkeypatch.setattr(agent, "settings", SimpleNamespace(**values))
@@ -173,3 +199,73 @@ def test_router_rejects_unknown_route(monkeypatch) -> None:
 
     with pytest.raises(OutputParserException):
         agent.build_router("openai").invoke("오늘 날씨")
+
+
+def build_search_graph(monkeypatch, main_model, calls: list[str], **overrides):
+    monkeypatch.setattr(agent, "build_search_tool", lambda: fake_search_tool(calls))
+    return build_test_graph(
+        monkeypatch,
+        main_model,
+        fake_model(),
+        fake_router("search"),
+        tavily_api_key="test-tavily-key",
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_route_calls_tool_and_keeps_tool_history(monkeypatch) -> None:
+    calls: list[str] = []
+    model = FakeToolModel(
+        messages=iter([tool_call("서울 날씨", "c1"), AIMessage("맑음 18도예요.")])
+    )
+    graph = build_search_graph(monkeypatch, model, calls)
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "오늘 서울 날씨"}]}, thread_config("w")
+    )
+
+    assert result["route"] == "search"
+    assert calls == ["서울 날씨"]
+    assert [m.type for m in result["messages"]] == ["human", "ai", "tool", "ai"]
+    assert result["messages"][-1].content == "맑음 18도예요."
+
+
+@pytest.mark.asyncio
+async def test_search_is_limited_per_answer(monkeypatch) -> None:
+    calls: list[str] = []
+    answers = [tool_call(f"q{i}", f"c{i}") for i in range(1, 4)] + [AIMessage("찾은 만큼 답해요.")]
+    graph = build_search_graph(monkeypatch, FakeToolModel(messages=iter(answers)), calls)
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "검색"}]}, thread_config("l")
+    )
+
+    # 세 번째 검색은 실행되지 않고, 모델은 가진 결과로 답한다.
+    assert calls == ["q1", "q2"]
+    assert result["messages"][-1].content == "찾은 만큼 답해요."
+
+
+@pytest.mark.asyncio
+async def test_search_route_without_tavily_key_goes_to_general(monkeypatch) -> None:
+    graph = build_test_graph(
+        monkeypatch, fake_model("일반 답"), fake_model(), fake_router("search")
+    )
+
+    result = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "오늘 날씨"}]}, thread_config("k")
+    )
+
+    assert result["route"] == "search"
+    assert result["messages"][-1].content == "일반 답"
+
+
+def test_search_tool_gets_key_from_settings(monkeypatch) -> None:
+    monkeypatch.setattr(
+        agent, "settings", SimpleNamespace(tavily_api_key="tvly-test", tavily_max_results=3)
+    )
+
+    search_tool = agent.build_search_tool()
+
+    assert search_tool.max_results == 3
+    assert search_tool.api_wrapper.tavily_api_key.get_secret_value() == "tvly-test"
