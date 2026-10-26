@@ -52,6 +52,19 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # 역할 신뢰 조건(sub·aud)과 비교할 수 있게 OIDC 토큰의 클레임만 출력한다(토큰 자체는 출력하지 않는다).
+      - name: OIDC 토큰 클레임 확인
+        run: |
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          python3 - "$TOKEN" <<'PY'
+          import base64, json, sys
+          payload = sys.argv[1].split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          keys = ["sub", "aud", "iss", "repository", "ref", "repository_owner"]
+          print(json.dumps({k: claims.get(k) for k in keys}, indent=2))
+          PY
+
       - name: AWS 임시 권한 받기 (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
