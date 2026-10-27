@@ -2,7 +2,7 @@
 # 모든 명령은 uv 가상환경(.venv)에서 실행된다.
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev test test-db cov lint format check fix clean
+.PHONY: help install dev test test-db lint format check fix clean
 
 help: ## 명령 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -22,9 +22,6 @@ test-db: ## 실제 PostgreSQL(pgvector)로 관리자·RAG SQL 테스트 (Docker 
 	@TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres uv run pytest tests/integration; \
 		status=$$?; docker stop chatbot-test-db > /dev/null; exit $$status
 
-cov: ## 테스트 + 커버리지 리포트 (htmlcov/index.html 도 생성)
-	uv run pytest --cov --cov-report=term --cov-report=html
-
 lint: ## 린트 검사 + 자동 수정
 	uv run ruff check . --fix
 
@@ -38,8 +35,8 @@ fix: ## 린트 자동 수정 + 포맷 정리를 한 번에
 check: ## 커밋 전 전체 점검 (린트 → 포맷 → 테스트)
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run pytest --cov --cov-report=term
+	uv run pytest
 
 clean: ## 캐시 정리
 	find . -name "__pycache__" -type d -prune -not -path "./.venv/*" -exec rm -rf {} +
-	rm -rf .pytest_cache .ruff_cache .coverage htmlcov
+	rm -rf .pytest_cache .ruff_cache

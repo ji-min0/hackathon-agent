@@ -99,7 +99,7 @@ uv run python scripts/ingest.py "docs/문서.pdf"   # pdf · md · txt
 ## 개발
 
 ```bash
-make check    # ruff 린트·포맷 검사 + pytest(커버리지). 커밋 전에 돌린다
+make check    # ruff 린트·포맷 검사 + pytest. 커밋 전에 돌린다
 make fix      # 린트 자동 수정 + 포맷
 make test-db  # Docker 로 pgvector Postgres 를 잠깐 띄워 관리자·RAG SQL 을 실제로 확인
 ```
