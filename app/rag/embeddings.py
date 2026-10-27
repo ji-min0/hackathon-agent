@@ -6,6 +6,8 @@
 EMBEDDING_PROVIDER 를 바꾸면 scripts/ingest.py 로 문서를 다시 임베딩해야 한다.
 """
 
+import asyncio
+
 from langchain_core.embeddings import Embeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_openai import OpenAIEmbeddings
@@ -33,3 +35,29 @@ def build_embeddings() -> Embeddings:
         # OpenAI 가 아닌 서버는 tiktoken 토큰 분할을 이해하지 못하므로 문자열 그대로 보낸다.
         check_embedding_ctx_length=False,
     )
+
+
+# shortcut: Gemini 무료 등급 한도(분당 100건)에 맞춘 값이다. 유료 키나 vLLM 이면 늘려도 된다.
+EMBED_BATCH = 90
+RATE_LIMIT_WAIT_SECONDS = 60
+RATE_LIMIT_RETRIES = 3
+
+
+async def embed_documents_in_batches(embeddings: Embeddings, texts: list[str]) -> list[list[float]]:
+    """문서를 나눠 임베딩한다. 한도 초과(429)면 잠시 기다렸다 다시 보낸다.
+
+    한 번에 다 보내면 청크가 100개를 넘는 문서에서 Gemini 무료 등급이 429 로 거절한다.
+    """
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), EMBED_BATCH):
+        batch = texts[start : start + EMBED_BATCH]
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                vectors += await embeddings.aembed_documents(batch)
+                break
+            except Exception as exc:
+                if "429" not in str(exc) or attempt == RATE_LIMIT_RETRIES:
+                    raise
+                print(f"임베딩 한도 초과. {RATE_LIMIT_WAIT_SECONDS}초 뒤 다시 보냅니다.")
+                await asyncio.sleep(RATE_LIMIT_WAIT_SECONDS)
+    return vectors

@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.db import create_pool
 from app.rag import store
 from app.rag.chunking import chunk_document
-from app.rag.embeddings import build_embeddings
+from app.rag.embeddings import build_embeddings, embed_documents_in_batches
 
 
 async def main(paths: list[Path]) -> None:
@@ -36,7 +36,7 @@ async def main(paths: list[Path]) -> None:
     try:
         for path in paths:
             chunks = chunk_document(path)
-            vectors = await embeddings.aembed_documents([chunk.content for chunk in chunks])
+            vectors = await embed_documents_in_batches(embeddings, [c.content for c in chunks])
             count = await store.replace_source(pool, path.name, chunks, vectors)
             longest = max(len(chunk.content) for chunk in chunks)
             print(f"{path.name}: {count} chunks (longest {longest} chars)")
