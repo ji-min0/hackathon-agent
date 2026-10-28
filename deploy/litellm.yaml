@@ -1,0 +1,32 @@
+# LiteLLM 프록시. 앱은 OPENAI_BASE_URL 로 여기만 부르고, 모델 이름은 main 이다.
+# main(팀 vLLM)이 실패하면 Codyssey gpt-5-mini → claude-haiku-4 순서로 넘어간다.
+# Qwen 으로 바꾸면 main 의 model 을 openai/qwen3.8-27b-gsq-rco 로 고친다.
+model_list:
+  - model_name: main
+    litellm_params:
+      model: openai/gemma4-26b
+      api_base: os.environ/VLLM_BASE_URL
+      api_key: os.environ/VLLM_API_KEY
+      # 생각(thinking)을 끄고 바로 답하게 한다. 켜면 느려지고 답 앞에 생각이 섞일 수 있다.
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+      # PC 가 꺼졌거나 모델 전환 중(503)이면 오래 기다리지 않고 폴백으로 넘어간다.
+      timeout: 20
+  - model_name: gpt-5-mini
+    litellm_params:
+      model: openai/gpt-5-mini
+      api_base: https://copa.codyssey.kr/v1
+      api_key: os.environ/CODYSSEY_API_KEY
+      timeout: 40
+  - model_name: claude-haiku-4
+    litellm_params:
+      model: anthropic/claude-haiku-4
+      # /v1 없이 적는다. /v1/messages 를 붙여 부른다.
+      api_base: https://copa.codyssey.kr
+      api_key: os.environ/ANTHROPIC_API_KEY
+      timeout: 40
+
+router_settings:
+  fallbacks:
+    - main: [gpt-5-mini, claude-haiku-4]

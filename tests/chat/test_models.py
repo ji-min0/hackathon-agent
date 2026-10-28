@@ -20,15 +20,6 @@ class FakeChatAnthropic:
         self.kwargs = kwargs
 
 
-class FakeFallbackCapableModel:
-    def __init__(self) -> None:
-        self.fallbacks: list[object] | None = None
-
-    def with_fallbacks(self, fallbacks: list[object]):
-        self.fallbacks = fallbacks
-        return self
-
-
 def model_settings(**overrides: object) -> SimpleNamespace:
     values = {
         "openai_model_name": "gpt-5-mini",
@@ -111,42 +102,3 @@ def test_anthropic_model_requires_api_key(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         models.build_model("anthropic")
-
-
-def test_openai_model_falls_back_to_anthropic_then_gemini(monkeypatch) -> None:
-    anthropic_model = object()
-    gemini_model = object()
-    primary_model = FakeFallbackCapableModel()
-    monkeypatch.setattr(models, "settings", model_settings())
-    monkeypatch.setattr(models, "build_openai_model", lambda: primary_model)
-    monkeypatch.setattr(models, "build_anthropic_model", lambda: anthropic_model)
-    monkeypatch.setattr(models, "build_gemini_model", lambda: gemini_model)
-
-    model = models.build_openai_fallback_model()
-
-    assert model is primary_model
-    assert primary_model.fallbacks == [anthropic_model, gemini_model]
-
-
-def test_openai_model_skips_providers_without_keys(monkeypatch) -> None:
-    anthropic_model = object()
-    primary_model = FakeFallbackCapableModel()
-    monkeypatch.setattr(models, "settings", model_settings(gemini_api_key=""))
-    monkeypatch.setattr(models, "build_openai_model", lambda: primary_model)
-    monkeypatch.setattr(models, "build_anthropic_model", lambda: anthropic_model)
-
-    models.build_openai_fallback_model()
-
-    assert primary_model.fallbacks == [anthropic_model]
-
-
-def test_openai_model_without_fallback_keys_has_no_fallback(monkeypatch) -> None:
-    primary_model = object()
-    monkeypatch.setattr(
-        models,
-        "settings",
-        model_settings(gemini_api_key="", anthropic_api_key=""),
-    )
-    monkeypatch.setattr(models, "build_openai_model", lambda: primary_model)
-
-    assert models.build_openai_fallback_model() is primary_model

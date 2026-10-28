@@ -25,7 +25,7 @@
 | 백엔드 | FastAPI (async), uvicorn |
 | 프론트엔드 | Jinja2 템플릿 + Vanilla JS |
 | AI | LangGraph `StateGraph` + LangChain `create_agent`, 미들웨어(요약·툴 호출 제한·휴먼인더루프) |
-| LLM | OpenAI·Anthropic 호환 API(Codyssey 게이트웨이). `OPENAI_BASE_URL` 로 vLLM 등에 교체 |
+| LLM | LiteLLM 프록시 → 팀 vLLM(Gemma 4, RTX 3090) → 실패 시 Codyssey 게이트웨이(gpt-5-mini, claude-haiku-4) |
 | 검색·RAG | Tavily, Gemini 임베딩, pymupdf, Supabase pgvector |
 | 인증·DB | Supabase Auth(HttpOnly 쿠키), Supabase PostgreSQL |
 | 배포 | AWS EC2(CloudFormation) + Docker Compose + Caddy(HTTPS 자동 인증서) |
@@ -48,11 +48,12 @@ Python 3.12 와 [uv](https://docs.astral.sh/uv/) 가 필요하다. 자주 쓰는
 cp .env.example .env
 ```
 
-`.env` 를 채운다. 각 키 설명은 `.env.example` 주석에 있다. **`.env` 는 저장소에 올라가지 않는다.**
+`.env` 를 채운다. 주요 키는 아래 표, 나머지는 기본값 그대로 둔다. **`.env` 는 저장소에 올라가지 않는다.**
 
 | 키 | 필수 | 내용 |
 |---|:--:|---|
-| `OPENAI_API_KEY`, `OPENAI_BASE_URL` | O | 기본 LLM. `OPENAI_BASE_URL` 을 비우면 OpenAI 공식 서버 |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL` | O | LiteLLM 프록시 마스터 키와 주소(`http://localhost:4000/v1`) |
+| `CODYSSEY_API_KEY`, `VLLM_BASE_URL`, `VLLM_API_KEY` | O | 프록시가 부르는 Codyssey 게이트웨이와 팀 vLLM |
 | `ANTHROPIC_API_KEY` | | OpenAI 실패 시 폴백. 노드별 공급자(`*_MODEL_PROVIDER`)로도 쓴다 |
 | `DATABASE_URL` | O | Supabase → Connect → **Session pooler(5432)**. Transaction pooler(6543)는 체크포인터와 충돌한다 |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | O | Supabase → Settings → API Keys |
@@ -60,6 +61,8 @@ cp .env.example .env
 | `GEMINI_API_KEY` | | RAG 임베딩(`EMBEDDING_PROVIDER=gemini`) |
 | `ADMIN_EMAILS` | | 관리자 페이지에 들어갈 이메일(쉼표 구분) |
 | `AGENT_PATTERN` | | `router`(기본) · `single` · `supervisor` |
+| `HITL_TOOLS` | | 실행 전 승인받을 툴(쉼표 구분). 되돌리기 어려운 실행 툴에만 건다 |
+| `AI_TIMEOUT_SECONDS` | | 한 번 답하는 전체 제한. `deploy/Caddyfile` 의 `read_timeout`(90s)보다 작게 |
 | `COOKIE_SECURE` | | 로컬은 `false`, HTTPS 배포는 `true` |
 
 `DATABASE_URL` 비밀번호에 특수문자가 있으면 URL 인코딩한다(예: `!` → `%21`).
@@ -73,6 +76,7 @@ LangGraph 체크포인트 테이블은 서버가 처음 뜰 때 자동으로 만
 ### 4. 실행·확인
 
 ```bash
+docker compose up -d litellm   # LLM 프록시(처음 한 번)
 make dev                       # = uvicorn app.main:app --reload
 curl -s localhost:8000/health  # {"status":"ok"}
 ```

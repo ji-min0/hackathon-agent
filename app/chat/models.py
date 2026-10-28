@@ -1,6 +1,7 @@
-"""LLM 모델 생성. 공급자(OpenAI 호환·Anthropic·Gemini)별 모델과 폴백 체인을 만든다.
+"""LLM 모델 생성. 공급자(OpenAI 호환·Anthropic·Gemini)별 모델을 만든다.
 
-vLLM 등으로 바꿀 때는 이 파일과 .env 의 OPENAI_BASE_URL 만 본다.
+openai 공급자는 LiteLLM 프록시(deploy/litellm.yaml)를 부른다. 어떤 모델로 갈지와
+실패 시 폴백 순서는 프록시가 정하므로 여기에는 폴백 코드가 없다.
 """
 
 from langchain_anthropic import ChatAnthropic
@@ -22,7 +23,7 @@ def build_openai_model() -> ChatOpenAI:
         # GPT-5 계열은 temperature 기본값(1)만 허용해서 지정하지 않는다.
         api_key=settings.openai_api_key,
         timeout=settings.openai_timeout_seconds,
-        # 재시도 대신 명시적인 폴백 체인으로 장애를 처리한다.
+        # 재시도·폴백은 LiteLLM 프록시가 한다.
         max_retries=0,
     )
 
@@ -58,28 +59,10 @@ def build_gemini_model() -> ChatGoogleGenerativeAI:
     )
 
 
-def build_openai_fallback_model():
-    """OpenAI 우선. 실패하면 Anthropic, 그다음 Gemini 순서로 넘어간다.
-
-    키가 비어 있는 공급자는 폴백 목록에서 뺀다.
-    """
-    primary_model = build_openai_model()
-
-    fallbacks = []
-    if settings.anthropic_api_key:
-        fallbacks.append(build_anthropic_model())
-    if settings.gemini_api_key:
-        fallbacks.append(build_gemini_model())
-
-    if not fallbacks:
-        return primary_model
-    return primary_model.with_fallbacks(fallbacks)
-
-
 def build_model(provider: str):
     """설정에서 명시한 공급자의 역할별 모델을 만든다."""
     if provider == "openai":
-        return build_openai_fallback_model()
+        return build_openai_model()
     if provider == "anthropic":
         return build_anthropic_model()
     if provider == "gemini":

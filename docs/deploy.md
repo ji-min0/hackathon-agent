@@ -5,7 +5,11 @@ DB 는 Supabase 를 그대로 쓰므로 서버를 바꿔도 데이터 이전이 
 
 ```
 브라우저 ─HTTPS→ Caddy(80·443, 인증서 자동 발급) ─HTTP→ app(uvicorn 8000) ─→ Supabase
+                                                          └→ LiteLLM(4000) ─→ 팀 vLLM / Codyssey
 ```
+
+LLM 은 모두 LiteLLM 프록시(`deploy/litellm.yaml`)를 거친다. 팀 vLLM(`main`)이 실패하면
+Codyssey gpt-5-mini → claude-haiku-4 로 넘어간다. 모델 이름이나 폴백 순서는 이 파일만 고친다.
 
 - **AWS(현재)**: CloudFormation 스택 하나로 서버·IP·방화벽을 만들고, 배포는 서버에서
   `./scripts/deploy.sh` 한 번으로 한다(git pull → 빌드·실행 → 헬스체크).
@@ -120,8 +124,8 @@ NCP 에는 CloudFormation 이 없으므로 서버를 손으로 만든다. 서버
    ```
 
 3. 위 "2. 서버에 `.env` 올리기"를 새 IP 로 하고 `./scripts/deploy.sh`. NCP 기본 계정은 `root` 다.
-4. 팀원이 같은 NCP 안에 vLLM 을 띄우면 `.env` 의 `OPENAI_BASE_URL` 을 GPU 서버 **사설 IP**
-   (예: `http://10.0.1.5:8000/v1`)로 바꾸고 `docker compose restart app`.
+4. 팀원이 같은 NCP 안에 vLLM 을 띄우면 `.env` 의 `VLLM_BASE_URL` 을 GPU 서버 **사설 IP**
+   (예: `http://10.0.1.5:8000/v1`)로 바꾸고 `docker compose up -d litellm`.
 5. 확인되면 AWS 스택을 삭제한다.
 
 ## 문제 해결
@@ -132,5 +136,6 @@ NCP 에는 CloudFormation 이 없으므로 서버를 손으로 만든다. 서버
 | IP 접속 시 인증서 경고 | `.env` 에 `ACME_PROFILE=shortlived` 가 있는지 |
 | 로그인 후 바로 로그아웃됨 | `http://` 로 접속했는지. Secure 쿠키라 HTTPS 에서만 유지된다 |
 | app 이 unhealthy | `docker compose logs app` 에서 `.env` 값 오류 확인 |
+| 답이 늦거나 모델이 gpt-5-mini 로 나옴 | 팀 vLLM 이 꺼져 폴백된 것. `docker compose logs litellm` |
 | `deploy.sh` 의 `git pull` 실패 | 서버에서 추적 파일을 직접 고쳤는지. `git status` 로 확인하고 `git checkout -- <파일>` |
 | 22번 SSH 접속이 안 됨 | 내 IP 가 바뀌었는지. 스택 업데이트로 `SSHAllowedCidr` 를 새 IP 로 바꾼다 |
