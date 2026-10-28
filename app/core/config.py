@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
+        # `ROUTER_MODEL_PROVIDER=` 처럼 비워 둔 값은 설정하지 않은 것으로 보고 기본값을 쓴다.
+        env_ignore_empty=True,
         protected_namespaces=(),
     )
 

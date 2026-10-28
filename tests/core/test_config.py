@@ -28,3 +28,10 @@ def test_gemini_is_selected_only_when_configured() -> None:
 
     assert settings.main_model_provider == "gemini"
     assert settings.summary_model_provider == "gemini"
+
+
+def test_empty_env_value_falls_back_to_default(monkeypatch) -> None:
+    # .env.example 처럼 `GUARDRAIL_MODEL_PROVIDER=` 로 비워 두면 main 공급자를 따라야 한다.
+    monkeypatch.setenv("GUARDRAIL_MODEL_PROVIDER", "")
+
+    assert make_settings().guardrail_model_provider is None
